@@ -23,7 +23,7 @@ from langchain.callbacks.base import BaseCallbackHandler
 
 import openai
 
-print("Started")
+print("Started") # For Replit console debugging
 st.set_page_config(page_title='Your Enterprise Sidekick', page_icon='🚀')
 
 # Get a unique session id for memory
@@ -47,7 +47,7 @@ class StreamHandler(BaseCallbackHandler):
 global lang_dict
 global language
 global rails_dict
-global session
+# session is a Streamlit object, no need to global declare here
 global embedding
 global vectorstore
 global chat_history
@@ -94,13 +94,13 @@ def check_password():
     return False
 
 def logout():
-    for key in st.session_state.keys():
+    for key in list(st.session_state.keys()): # Use list() for safe iteration while deleting
         del st.session_state[key]
     st.cache_resource.clear()
     st.cache_data.clear()
     st.rerun()
 
-# Function for Vectorizing uploaded data into Astra DB
+# Function for Vectorizing uploaded data into Astra DB (Mantendremos estas funciones por si las usáis en modo admin internamente)
 def vectorize_text(uploaded_files):
     for uploaded_file in uploaded_files:
         if uploaded_file is not None:
@@ -108,23 +108,27 @@ def vectorize_text(uploaded_files):
             # Write to temporary file
             temp_dir = tempfile.TemporaryDirectory()
             file = uploaded_file
-            print(f"""Processing: {file}""")
+            # print(f"""Processing: {file}""") # Replit console
+            st.session_state.debug_messages.append(f"Processing file: {file.name}")
+
+
             temp_filepath = os.path.join(temp_dir.name, file.name)
             with open(temp_filepath, 'wb') as f:
                 f.write(file.getvalue())
 
             # Process TXT
             if uploaded_file.name.endswith('txt'):
-                file = [uploaded_file.read().decode()]
-
+                # It's better to load it as a Document object for consistency
+                with open(temp_filepath, 'r', encoding='utf-8') as f_txt:
+                    file_content = [f_txt.read()]
+                
                 text_splitter = RecursiveCharacterTextSplitter(
                     chunk_size = 1500,
                     chunk_overlap  = 100
                 )
-
-                texts = text_splitter.create_documents(file, [{'source': uploaded_file.name}])
+                texts = text_splitter.create_documents(file_content, [{'source': uploaded_file.name}])
                 vectorstore.add_documents(texts)
-                st.info(f"{len(texts)} {lang_dict['load_text']}")
+                st.info(f"{len(texts)} {lang_dict.get('load_text', 'text segments loaded')}") # Use .get for safety
             
             # Process PDF
             if uploaded_file.name.endswith('pdf'):
@@ -136,21 +140,22 @@ def vectorize_text(uploaded_files):
                     chunk_size = 1500,
                     chunk_overlap  = 100
                 )
-
                 pages = text_splitter.split_documents(docs)
                 vectorstore.add_documents(pages)  
-                st.info(f"{len(pages)} {lang_dict['load_pdf']}")
+                st.info(f"{len(pages)} {lang_dict.get('load_pdf', 'PDF pages/segments loaded')}")
 
             # Process CSV
             if uploaded_file.name.endswith('csv'):
                 docs = []
                 loader = CSVLoader(temp_filepath)
                 docs.extend(loader.load())
-
+                # For CSVs, you might want to split differently or ensure content is text-rich
                 vectorstore.add_documents(docs)
-                st.info(f"{len(docs)} {lang_dict['load_csv']}")
+                st.info(f"{len(docs)} {lang_dict.get('load_csv', 'CSV documents/rows loaded')}")
+            
+            temp_dir.cleanup() # Clean up temporary directory
 
-# Load data from URLs
+# Load data from URLs (Mantendremos estas funciones por si las usáis en modo admin internamente)
 def vectorize_url(urls):
     # Create the text splitter
     text_splitter = RecursiveCharacterTextSplitter(
@@ -158,23 +163,30 @@ def vectorize_url(urls):
         chunk_overlap  = 100
     )
 
-    for url in urls:
+    for url_item in urls:
+        url = url_item.strip() # Clean whitespace
+        if not url:
+            continue
         try:
             loader = WebBaseLoader(url)
             docs = loader.load()    
             pages = text_splitter.split_documents(docs)
-            print (f"Loading from URL: {pages}")
+            # print (f"Loading from URL: {pages}") # Replit console
+            st.session_state.debug_messages.append(f"Loading from URL ({len(pages)} pages): {url}")
             vectorstore.add_documents(pages)  
-            st.info(f"{len(pages)} loaded")
+            st.info(f"{len(pages)} {lang_dict.get('url_pages_loaded', 'pages loaded from URL')}")
         except Exception as e:
-            st.info(f"An error occurred:", e)
+            st.error(f"{lang_dict.get('url_error', 'Error loading from URL')} {url}: {e}")
+            st.session_state.debug_messages.append(f"Error loading URL {url}: {e}")
+
 
 # Define the prompt
 def get_prompt(type):
     template = ''
+    current_language = st.session_state.get("language", "es_ES") # Get current language from session state
 
     if type == 'Extended results':
-        print ("Prompt type: Extended results")
+        # print ("Prompt type: Extended results") # Replit console
         template = f"""You're a helpful AI assistant tasked to answer the user's questions.
 You're friendly and you answer extensively with multiple sentences. You prefer to use bulletpoints to summarize.
 If the question states the name of the user, just say 'Thanks, I'll use this information going forward'.
@@ -189,10 +201,10 @@ Use the following chat history to answer the question:
 Question:
 {{question}}
 
-Answer in {language}:"""
+Answer in {current_language}:""" # Use dynamic language
 
     if type == 'Short results':
-        print ("Prompt type: Short results")
+        # print ("Prompt type: Short results") # Replit console
         template = f"""You're a helpful AI assistant tasked to answer the user's questions.
 You answer in an exceptionally brief way.
 If the question states the name of the user, just say 'Thanks, I'll use this information going forward'.
@@ -207,38 +219,40 @@ Use the following chat history to answer the question:
 Question:
 {{question}}
 
-Answer in {language}:"""
+Answer in {current_language}:""" # Use dynamic language
 
     if type == 'Custom':
-        print ("Prompt type: Custom")
-        template = custom_prompt
+        # print ("Prompt type: Custom") # Replit console
+        template = custom_prompt # Assumes custom_prompt is globally available or passed if needed
 
     return ChatPromptTemplate.from_messages([("system", template)])
 
 # Get the OpenAI Chat Model
+@st.cache_resource() # Cache the model loading
 def load_model():
-    print(f"""load_model""")
+    # print(f"""load_model""") # Replit console
     # Get the OpenAI Chat Model
     return ChatOpenAI(
         temperature=0.3,
-        model='gpt-4-1106-preview',
+        model='gpt-4o', # Using a more recent model, ensure it's available in your OpenAI plan
         streaming=True,
-        verbose=True
+        verbose=False # Usually False for production/demos unless debugging Langchain calls
     )
 
 # Get the Retriever
-def load_retriever(top_k_vectorstore):
-    print(f"""load_retriever with top_k_vectorstore='{top_k_vectorstore}'""")
+# We don't cache the retriever directly if top_k_vectorstore can change dynamically
+def load_retriever(current_vectorstore, top_k_vectorstore):
+    # print(f"""load_retriever with top_k_vectorstore='{top_k_vectorstore}'""") # Replit console
     # Get the Retriever from the Vectorstore
-    return vectorstore.as_retriever(
+    return current_vectorstore.as_retriever(
         search_kwargs={"k": top_k_vectorstore}
     )
 
 @st.cache_resource()
-def load_memory(top_k_history):
-    print(f"""load_memory with top-k={top_k_history}""")
+def load_memory(_chat_history_resource, top_k_history): # Pass the actual chat_history resource
+    # print(f"""load_memory with top-k={top_k_history}""") # Replit console
     return ConversationBufferWindowMemory(
-        chat_memory=chat_history,
+        chat_memory=_chat_history_resource, # Use the passed resource
         return_messages=True,
         k=top_k_history,
         memory_key="chat_history",
@@ -246,15 +260,15 @@ def load_memory(top_k_history):
         output_key='answer',
     )
 
-def generate_queries():
-    prompt = f"""You are a helpful assistant that generates multiple search queries based on a single input query in language {language}.
+def generate_queries_chain(_model): # Pass the model
+    prompt_template = f"""You are a helpful assistant that generates multiple search queries based on a single input query in language {st.session_state.get("language", "es_ES")}.
 Generate multiple search queries related to: {{original_query}}
 OUTPUT (4 queries):"""
+    return ChatPromptTemplate.from_messages([("system", prompt_template)]) | _model | StrOutputParser() | (lambda x: x.split("\n"))
 
-    return ChatPromptTemplate.from_messages([("system", prompt)]) | model | StrOutputParser() | (lambda x: x.split("\n"))
 
 def reciprocal_rank_fusion(results: list[list], k=60):
-    from langchain.load import dumps, loads
+    from langchain.load import dumps, loads # Keep import local if only used here
 
     fused_scores = {}
     for docs in results:
@@ -263,7 +277,7 @@ def reciprocal_rank_fusion(results: list[list], k=60):
             doc_str = dumps(doc)
             if doc_str not in fused_scores:
                 fused_scores[doc_str] = 0
-            previous_score = fused_scores[doc_str]
+            # previous_score = fused_scores[doc_str] # Unused variable
             fused_scores[doc_str] += 1 / (rank + k)
 
     reranked_results = [
@@ -273,30 +287,34 @@ def reciprocal_rank_fusion(results: list[list], k=60):
     return reranked_results
 
 # Describe the image based on OpenAI
-def describeImage(image_bin, language):
-    print ("describeImage")
+def describeImage(image_bin, current_language): # Pass current language
+    # print ("describeImage") # Replit console
     image_base64 = base64.b64encode(image_bin).decode()
-    response = openai.chat.completions.create(
-        model="gpt-4-vision-preview",
-        messages=[
-            {
-            "role": "user",
-            "content": [
-                #{"type": "text", "text": "Describe the image in detail"},
-                {"type": "text", "text": f"Provide a search text for the main topic of the image writen in {language}"},
+    try: # Add try-except for API calls
+        response = openai.chat.completions.create(
+            model="gpt-4-vision-preview",
+            messages=[
                 {
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{image_base64}",
-                },
-                },
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"Provide a search text for the main topic of the image writen in {current_language}"},
+                    {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{image_base64}",
+                    },
+                    },
+                ],
+                }
             ],
-            }
-        ],
-        max_tokens=4096,  # default max tokens is low so set higher
-    )
-    print (f"describeImage result: {response}")
-    return response
+            max_tokens=100,  # Reduced for a search text
+        )
+        # print (f"describeImage result: {response}") # Replit console
+        return response
+    except Exception as e:
+        st.error(f"Error describing image: {e}")
+        return None
+
 
 ##################
 ### Data Cache ###
@@ -304,25 +322,40 @@ def describeImage(image_bin, language):
 
 # Cache localized strings
 @st.cache_data()
-def load_localization(locale):
-    print("load_localization")
-    # Load in the text bundle and filter by language locale
-    df = pd.read_csv("./customizations/localization.csv")
-    df = df.query(f"locale == '{locale}'")
-    # Create and return a dictionary of key/values.
-    lang_dict = {df.key.to_list()[i]:df.value.to_list()[i] for i in range(len(df.key.to_list()))}
-    return lang_dict
+def load_localization(locale_code):
+    # print("load_localization for:", locale_code) # Replit console
+    try:
+        df = pd.read_csv("./customizations/localization.csv")
+        df_lang = df.query(f"locale == '{locale_code}'")
+        if df_lang.empty and locale_code != "en_US": # Fallback to en_US if specific lang not found
+            # print(f"Locale {locale_code} not found, falling back to en_US") # Replit console
+            df_lang = df.query("locale == 'en_US'")
+        if df_lang.empty: # Fallback if en_US also not found (should not happen if file is correct)
+             # print("Critical: en_US locale not found in localization.csv") # Replit console
+             return {"error": "Default localization not found"}
+        lang_dict_loaded = pd.Series(df_lang.value.values, index=df_lang.key).to_dict()
+        return lang_dict_loaded
+    except Exception as e:
+        # print(f"Error loading localization: {e}") # Replit console
+        # Provide a minimal dict for critical UI elements to prevent crashing
+        return {
+            "assistant_welcome": "Welcome!", "logout_caption": "Logged in as", "logout_button": "Logout",
+            "assistant_question": "How can I help you?", "take_picture": "Take picture..."
+        }
+
 
 # Cache localized strings
 @st.cache_data()
-def load_rails(username):
-    print("load_rails")
-    # Load in the rails bundle and filter by username
-    df = pd.read_csv("./customizations/rails.csv")
-    df = df.query(f"username == '{username}'")
-    # Create and return a dictionary of key/values.
-    rails_dict = {df.key.to_list()[i]:df.value.to_list()[i] for i in range(len(df.key.to_list()))}
-    return rails_dict
+def load_rails(username_key):
+    # print("load_rails for:", username_key) # Replit console
+    try:
+        df = pd.read_csv("./customizations/rails.csv")
+        df_user = df.query(f"username == '{username_key}'")
+        rails_dict_loaded = pd.Series(df_user.value.values, index=df_user.key).to_dict()
+        return rails_dict_loaded
+    except Exception as e:
+        # print(f"Error loading rails: {e}") # Replit console
+        return {} # Return empty dict if error or no rails
 
 #############
 ### Login ###
@@ -332,42 +365,80 @@ def load_rails(username):
 if not check_password():
     st.stop()  # Do not continue if check_password is not True.
 
+# These should be set after successful login by check_password()
 username = st.session_state.user
-language = st.secrets.languages[username]
+language = st.secrets.languages.get(username, "es_ES") # Default to Spanish if user has no language set
+st.session_state.language = language # Store in session state for describeImage and get_prompt
 lang_dict = load_localization(language)
+
 
 #######################
 ### Resources Cache ###
 #######################
+if "debug_messages" not in st.session_state:
+    st.session_state.debug_messages = []
+
 
 # Cache OpenAI Embedding for future runs
-@st.cache_resource(show_spinner=lang_dict['load_embedding'])
-def load_embedding():
-    print("load_embedding")
-    # Get the OpenAI Embedding
-    return OpenAIEmbeddings()
+@st.cache_resource(show_spinner=lambda: lang_dict.get('load_embedding', 'Loading Embeddings...'))
+def load_embedding_cached(): # Renamed to avoid conflict with global 'embedding'
+    # print("load_embedding_cached") # Replit console
+    try:
+        return OpenAIEmbeddings()
+    except Exception as e:
+        st.error(f"Failed to load OpenAI Embeddings: {e}. Check your OPENAI_API_KEY.")
+        return None
 
 # Cache Vector Store for future runs
-@st.cache_resource(show_spinner=lang_dict['load_vectorstore'])
-def load_vectorstore(username):
-    print(f"load_vectorstore for {username}")
-    # Get the load_vectorstore store from Astra DB
-    return AstraDB(
-        embedding=embedding,
-        collection_name=f"vector_context_{username}",
-        token=st.secrets["ASTRA_TOKEN"],
-        api_endpoint=os.environ["ASTRA_ENDPOINT"],
-    )
+@st.cache_resource(show_spinner=lambda: lang_dict.get('load_vectorstore', 'Loading Vector Store...'))
+def load_vectorstore_cached(_embedding_resource, username_key): # Pass embedding and username
+    # print(f"load_vectorstore_cached for {username_key}") # Replit console
+    if not _embedding_resource:
+        st.error("Embeddings not loaded, cannot initialize Vector Store.")
+        return None
+    try:
+        # Ensure ASTRA_ENDPOINT and ASTRA_TOKEN are loaded, preferentially from st.secrets if available
+        astra_endpoint = st.secrets.get("ASTRA_ENDPOINT", os.environ.get("ASTRA_ENDPOINT"))
+        astra_token = st.secrets.get("ASTRA_TOKEN", os.environ.get("ASTRA_TOKEN"))
+
+        if not all([astra_endpoint, astra_token]):
+            st.error("Astra DB Endpoint or Token not configured in secrets/environment.")
+            return None
+
+        return AstraDB(
+            embedding=_embedding_resource,
+            collection_name=f"vector_context_{username_key}", # Use username_key
+            api_endpoint=astra_endpoint,
+            token=astra_token,
+            # namespace=st.secrets.get("ASTRA_KEYSPACE") # Add if you use a specific keyspace from secrets
+        )
+    except Exception as e:
+        st.error(f"Failed to initialize AstraDB Vector Store: {e}")
+        return None
 
 # Cache Chat History for future runs
-@st.cache_resource(show_spinner=lang_dict['load_message_history'])
-def load_chat_history(username):
-    print(f"load_chat_history for {username}_{st.session_state.session_id}")
-    return AstraDBChatMessageHistory(
-        session_id=f"{username}_{st.session_state.session_id}",
-        api_endpoint=os.environ["ASTRA_ENDPOINT"],
-        token=st.secrets["ASTRA_TOKEN"],
-    )
+@st.cache_resource(show_spinner=lambda: lang_dict.get('load_message_history', 'Loading Chat History...'))
+def load_chat_history_cached(username_key): # Pass username
+    # print(f"load_chat_history_cached for {username_key}_{st.session_state.session_id}") # Replit console
+    try:
+        # Ensure ASTRA_ENDPOINT and ASTRA_TOKEN are loaded
+        astra_endpoint = st.secrets.get("ASTRA_ENDPOINT", os.environ.get("ASTRA_ENDPOINT"))
+        astra_token = st.secrets.get("ASTRA_TOKEN", os.environ.get("ASTRA_TOKEN"))
+
+        if not all([astra_endpoint, astra_token]):
+            st.error("Astra DB Endpoint or Token not configured for Chat History.")
+            return None # Or a dummy history object if preferred
+
+        return AstraDBChatMessageHistory(
+            session_id=f"{username_key}_{st.session_state.session_id}",
+            api_endpoint=astra_endpoint,
+            token=astra_token,
+            # keyspace_name=st.secrets.get("ASTRA_KEYSPACE") # Add if you use a specific keyspace
+        )
+    except Exception as e:
+        st.error(f"Failed to initialize AstraDB Chat Message History: {e}")
+        return None # Or a dummy history object
+
 
 #####################
 ### Session state ###
@@ -375,7 +446,8 @@ def load_chat_history(username):
 
 # Start with empty messages, stored in session state
 if 'messages' not in st.session_state:
-    st.session_state.messages = [AIMessage(content=lang_dict['assistant_welcome'])]
+    st.session_state.messages = [AIMessage(content=lang_dict.get('assistant_welcome', "Hi! How can I help?"))]
+
 
 ############
 ### Main ###
@@ -383,241 +455,100 @@ if 'messages' not in st.session_state:
 
 # Show a custom welcome text or the default text
 try:
-    st.markdown(Path(f"""./customizations/welcome/{username}.md""").read_text())
-except:
-    st.markdown(Path('./customizations/welcome/default.md').read_text())
+    st.markdown(Path(f"""./customizations/welcome/{username}.md""").read_text(encoding='utf-8'))
+except FileNotFoundError:
+    try:
+        st.markdown(Path('./customizations/welcome/default.md').read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        st.info("Welcome message file not found.") # Fallback message
+except Exception as e:
+    st.warning(f"Could not load welcome message: {e}")
+
 
 # Show a custom logo (svg or png) or the DataStax logo
 with st.sidebar:
+    logo_path_str = ""
     try:
-        st.image(f"""./customizations/logo/{username}.svg""", use_column_width="always")
-        st.text('')
-    except:
-        try:
-            st.image(f"""./customizations/logo/{username}.png""", use_column_width="always")
+        # Prioritize SVG then PNG for custom logo
+        custom_logo_svg = Path(f"./customizations/logo/{username}.svg")
+        custom_logo_png = Path(f"./customizations/logo/{username}.png")
+        default_logo = Path('./customizations/logo/default.svg')
+
+        if custom_logo_svg.is_file():
+            logo_path_str = str(custom_logo_svg)
+        elif custom_logo_png.is_file():
+            logo_path_str = str(custom_logo_png)
+        elif default_logo.is_file():
+            logo_path_str = str(default_logo)
+        
+        if logo_path_str:
+            st.image(logo_path_str, use_column_width="always")
+            st.text('') # For spacing
+        else:
+            st.text('') # DataStax logo was here, can be removed or replaced
             st.text('')
-        except:
-            st.image('./customizations/logo/default.svg', use_column_width="always")
-            st.text('')
+    except Exception as e:
+        st.warning(f"Could not load logo: {e}")
+
 
 # Logout button
 with st.sidebar:
-    st.markdown(f"""{lang_dict['logout_caption']} :orange[{username}]""")
-    logout_button = st.button(lang_dict['logout_button'])
+    st.markdown(f"""{lang_dict.get('logout_caption', "Logged in as")} :orange[{username}]""")
+    logout_button = st.button(lang_dict.get('logout_button', "Logout"))
     if logout_button:
         logout()
 
 with st.sidebar:
     st.divider()
 
-# Initialize
-with st.sidebar:
-    rails_dict = load_rails(username)
-    embedding = load_embedding()
-    vectorstore = load_vectorstore(username)
-    chat_history = load_chat_history(username)
+# Initialize resources after login and language is set
+embedding = load_embedding_cached()
+if embedding:
+    vectorstore = load_vectorstore_cached(embedding, username) # Pass embedding and username
+if vectorstore: # Only load chat history if vectorstore (and thus Astra creds) are OK
+    chat_history = load_chat_history_cached(username) # Pass username
+else:
+    chat_history = None # Ensure it's None if vectorstore failed
 
 # Options panel
 with st.sidebar:
+    rails_dict = load_rails(username) # Load rails based on username
+
     # Chat history settings
-    disable_chat_history = st.toggle(lang_dict['disable_chat_history'])
-    top_k_history = st.slider(lang_dict['k_chat_history'], 1, 50, 5, disabled=disable_chat_history)
-    memory = load_memory(top_k_history if not disable_chat_history else 0)
-    delete_history = st.button(lang_dict['delete_chat_history_button'], disabled=disable_chat_history)
-    if delete_history:
-        with st.spinner(lang_dict['deleting_chat_history']):
-            memory.clear()
+    disable_chat_history = st.toggle(lang_dict.get('disable_chat_history', "Disable Chat History?"))
+    top_k_history_val = 5 if disable_chat_history else st.secrets.get("DEFAULT_TOP_K_HISTORY", {}).get(username, 5)
+    top_k_history = st.slider(lang_dict.get('k_chat_history', "K for Chat History"), 1, 10, top_k_history_val, disabled=disable_chat_history)
+    
+    if chat_history: # Only initialize memory if chat_history is valid
+        memory = load_memory(chat_history, top_k_history if not disable_chat_history else 0)
+    else: # Provide a dummy memory or handle its absence if chat_history failed
+        # This part needs careful handling if chat_history can be None
+        # For now, let's assume if chat_history is None, memory operations might fail or need guards
+        memory = None 
+        st.warning("Chat history not available. Memory features might be limited.")
+
+
+    if chat_history: # Only show delete button if history exists
+        delete_history_button = st.button(lang_dict.get('delete_chat_history_button', "Delete Chat History"), disabled=disable_chat_history)
+        if delete_history_button and memory:
+            with st.spinner(lang_dict.get('deleting_chat_history', "Deleting chat history...")):
+                memory.clear()
+            st.success("Chat history deleted.") # Provide feedback
+            st.rerun() # Rerun to clear messages from display
+
     # Vector store settings
-    disable_vector_store = st.toggle(lang_dict['disable_vector_store'])
-    top_k_vectorstore = st.slider(lang_dict['top_k_vector_store'], 1, 50, 5, disabled=disable_vector_store)
-    strategy = st.selectbox(lang_dict['rag_strategy'], ('Basic Retrieval', 'Maximal Marginal Relevance', 'Fusion'), help=lang_dict['rag_strategy_help'], disabled=disable_vector_store)
+    disable_vector_store = st.toggle(lang_dict.get('disable_vector_store', "Disable Vector Store?"))
+    top_k_vectorstore_val = 5 if disable_vector_store else st.secrets.get("DEFAULT_TOP_K_VECTORSTORE", {}).get(username, 5)
+    top_k_vectorstore = st.slider(lang_dict.get('top_k_vector_store', "Top-K for Vector Store"), 1, 10, top_k_vectorstore_val, disabled=disable_vector_store)
+    
+    rag_strategies = ('Basic Retrieval', 'Maximal Marginal Relevance', 'Fusion')
+    default_strategy = st.secrets.get("DEFAULT_RAG_STRATEGY", {}).get(username, 'Basic Retrieval')
+    strategy_index = rag_strategies.index(default_strategy) if default_strategy in rag_strategies else 0
+    strategy = st.selectbox(lang_dict.get('rag_strategy', "RAG Strategy"), rag_strategies, index=strategy_index, help=lang_dict.get('rag_strategy_help', "Select RAG strategy"), disabled=disable_vector_store)
+
 
     custom_prompt_text = ''
-    custom_prompt_index = 0
-    try:
-        custom_prompt_text = open(f"""./customizations/prompt/{username}.txt""").read()
-        custom_prompt_index = 2
-    except:
-        custom_prompt_text = open(f"""./customizations/prompt/default.txt""").read()
-        custom_prompt_index = 0
-
-    prompt_type = st.selectbox(lang_dict['system_prompt'], ('Short results', 'Extended results', 'Custom'), index=custom_prompt_index)
-    custom_prompt = st.text_area(lang_dict['custom_prompt'], custom_prompt_text, help=lang_dict['custom_prompt_help'], disabled=(prompt_type != 'Custom'))
-    print(f"""{disable_vector_store}, {top_k_history}, {top_k_vectorstore}, {strategy}, {prompt_type}""")
-
-with st.sidebar:
-    st.divider()
-
-# Include the upload form for new data to be Vectorized
-with st.sidebar:
-    uploaded_files = st.file_uploader(lang_dict['load_context'], type=['txt', 'pdf', 'csv'], accept_multiple_files=True)
-    upload = st.button(lang_dict['load_context_button'])
-    if upload and uploaded_files:
-        vectorize_text(uploaded_files)
-
-# Include the upload form for URLs be Vectorized
-with st.sidebar:
-    urls = st.text_area(lang_dict['load_from_urls'], help=lang_dict['load_from_urls_help'])
-    urls = urls.split(',')
-    upload = st.button(lang_dict['load_from_urls_button'])
-    if upload and urls:
-        vectorize_url(urls)
-
-# Drop the vector data and start from scratch
-if (username in st.secrets['delete_option'] and st.secrets.delete_option[username] == 'True'):
-    with st.sidebar:
-        st.caption(lang_dict['delete_context'])
-        submitted = st.button(lang_dict['delete_context_button'])
-        if submitted:
-            with st.spinner(lang_dict['deleting_context']):
-                vectorstore.clear()
-                memory.clear()
-                st.session_state.messages = [AIMessage(content=lang_dict['assistant_welcome'])]
-
-with st.sidebar:
-    st.divider()
-
-# Draw rails
-with st.sidebar:
-        st.subheader(lang_dict['rails_1'])
-        st.caption(lang_dict['rails_2'])
-        for i in rails_dict:
-            st.markdown(f"{i}. {rails_dict[i]}")
-
-# Draw all messages, both user and agent so far (every time the app reruns)
-for message in st.session_state.messages:
-    st.chat_message(message.type).markdown(message.content)
-
-# Now get a prompt from a user
-question = st.chat_input(lang_dict['assistant_question'])
-with st.sidebar:
-    st.divider()
-    picture = st.camera_input(lang_dict['take_picture'])
-    if picture:
-        response = describeImage(picture.getvalue(), language)
-        picture_desc = response.choices[0].message.content
-        question = picture_desc
-
-if question:
-    print(f"Got question: {question}")
-           
-    # Add the prompt to messages, stored in session state
-    st.session_state.messages.append(HumanMessage(content=question))
-
-    # Draw the prompt on the page
-    print(f"Draw prompt")
-    with st.chat_message('human'):
-        st.markdown(question)
-
-    # Get model, retriever
-    model = load_model()
-    retriever = load_retriever(top_k_vectorstore)
-
-    # RAG Strategy
-    content = ''
-    fusion_queries = []
-    relevant_documents = []
-    if not disable_vector_store:
-        if strategy == 'Basic Retrieval':
-            # Basic naive RAG
-            relevant_documents = retriever.get_relevant_documents(query=question, k=top_k_vectorstore)
-        if strategy == 'Maximal Marginal Relevance':
-            relevant_documents = vectorstore.max_marginal_relevance_search(query=question, k=top_k_vectorstore)
-        if strategy == 'Fusion':
-            # Fusion: Generate new queries and retrieve most relevant documents based on that
-            generate_queries = generate_queries()
-            fusion_queries = generate_queries.invoke({"original_query": question})
-            print(f"""Fusion queries: {fusion_queries}""")
-
-            content += f"""
+    custom_prompt_file_path_user = Path(f"./customizations/prompt/{username}.txt")
+    custom_prompt_file_path_default = Path("./customizations/prompt/default.txt")
     
-*{lang_dict['using_fusion_queries']}*  
-"""
-            for fq in fusion_queries:
-                content += f"""📙 :orange[{fq}]  
-    """
-            # Write the generated fusion queries
-            with st.chat_message('assistant'):
-                st.markdown(content)
-
-            # Add the answer to the messages session state
-            st.session_state.messages.append(AIMessage(content=content))
-
-            chain = generate_queries | retriever.map() | reciprocal_rank_fusion
-            relevant_documents = chain.invoke({"original_query": question})
-            print(f"""Fusion results: {relevant_documents}""")
-
-    # Get the results from Langchain
-    print(f"Chat message")
-    with st.chat_message('assistant'):
-        content = ''
-
-        # UI placeholder to start filling with agent response
-        response_placeholder = st.empty()
-
-        # Get chat history
-        history = memory.load_memory_variables({})
-        print(f"Using memory: {history}")
-
-        # Create the chain
-        inputs = RunnableMap({
-            'context': lambda x: x['context'],
-            'chat_history': lambda x: x['chat_history'],
-            'question': lambda x: x['question']
-        })
-        print(f"Using inputs: {inputs}")
-
-        chain = inputs | get_prompt(prompt_type) | model
-        print(f"Using chain: {chain}")
-
-        # Call the chain and stream the results into the UI
-        response = chain.invoke({'question': question, 'chat_history': history, 'context': relevant_documents}, config={'callbacks': [StreamHandler(response_placeholder)]})
-        print(f"Response: {response}")
-        content += response.content
-
-        # Add the result to memory (without the sources)
-        memory.save_context({'question': question}, {'answer': content})
-
-        # Write the sources used
-        if disable_vector_store:
-            content += f"""
-            
-*{lang_dict['no_context']}*
-"""
-        else:
-            content += f"""
-        
-*{lang_dict['sources_used']}*  
-"""
-        sources = []
-        for doc in relevant_documents:
-            if strategy == 'Fusion':
-                doc = doc[0]
-            print (f"""DOC: {doc}""")
-            source = doc.metadata['source']
-            page_content = doc.page_content
-            if source not in sources:
-                content += f"""📙 :orange[{os.path.basename(os.path.normpath(source))}]  
-"""
-                sources.append(source)
-
-        # Write the history used
-        if disable_chat_history:
-            content += f"""
-            
-*{lang_dict['no_chat_history']}*
-"""
-        else:
-            content += f"""
-
-*{lang_dict['chat_history_used']}: ({int(len(history['chat_history'])/2)} / {top_k_history})*
-"""
-
-        # Write the final answer without the cursor
-        response_placeholder.markdown(content)
-
-        # Add the answer to the messages session state
-        st.session_state.messages.append(AIMessage(content=content))
-
-with st.sidebar:
-            st.caption("v231227.01")
+    try
