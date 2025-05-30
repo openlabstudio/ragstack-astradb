@@ -28,7 +28,7 @@ st.set_page_config(page_title='Your Enterprise Sidekick', page_icon='🚀')
 
 # Get a unique session id for memory
 if "session_id" not in st.session_state:
-    st.session_state.session_id = uuid.uuid4() # Convert to string if it's not already
+    st.session_state.session_id = uuid.uuid4()
 
 # Streaming call back handler for responses
 class StreamHandler(BaseCallbackHandler):
@@ -43,21 +43,21 @@ class StreamHandler(BaseCallbackHandler):
 ###############
 ### Globals ###
 ###############
-# It's generally better to initialize these within a broader scope or pass as parameters,
-# but following the original structure for now.
-lang_dict = {}
-language = "es_ES" # Default
-rails_dict = {}
-# session = None # This is a Streamlit object, not typically defined globally like this
-embedding = None
-vectorstore = None
-chat_history = None
-memory = None
-disable_vector_store = False
-strategy = 'Basic Retrieval'
-prompt_type = 'Short results'
-custom_prompt = ''
 
+global lang_dict
+global language
+global rails_dict
+global session
+global embedding
+global vectorstore
+global chat_history
+global memory
+
+# RAG options
+global disable_vector_store
+global strategy
+global prompt_type
+global custom_prompt
 
 #################
 ### Functions ###
@@ -70,130 +70,124 @@ def check_password():
     def login_form():
         """Form with widgets to collect user information"""
         with st.form("credentials"):
-            st.text_input('Username', key='username') # Original key
-            st.text_input('Password', type='password', key='password') # Original key
+            st.text_input('Username', key='username')
+            st.text_input('Password', type='password', key='password')
             st.form_submit_button('Login', on_click=password_entered)
 
     def password_entered():
         """Checks whether a password entered by the user is correct."""
-        # Ensure secrets and keys exist before accessing
-        if 'passwords' in st.secrets and \
-           st.session_state.get('username') in st.secrets['passwords'] and \
-           st.session_state.get('password') is not None and \
-           hmac.compare_digest(st.session_state['password'], st.secrets.passwords[st.session_state['username']]):
+        if st.session_state['username'] in st.secrets['passwords'] and hmac.compare_digest(st.session_state['password'], st.secrets.passwords[st.session_state['username']]):
             st.session_state['password_correct'] = True
             st.session_state.user = st.session_state['username']
-            if 'password' in st.session_state: # Delete only if it exists
-                 del st.session_state['password']  # Don't store the password.
+            del st.session_state['password']  # Don't store the password.
         else:
             st.session_state['password_correct'] = False
 
+    # Return True if the username + password is validated.
     if st.session_state.get('password_correct', False):
         return True
 
+    # Show inputs for username + password.
     login_form()
-    # Show error only if an attempt was made and it was incorrect
-    if "password_correct" in st.session_state and not st.session_state.password_correct:
-        st.error(lang_dict.get('login_error','😕 User not known or password incorrect')) # Use lang_dict.get
+    if "password_correct" in st.session_state:
+        st.error('😕 User not known or password incorrect')
     return False
 
 def logout():
-    keys_to_delete = list(st.session_state.keys()) # Iterate over a copy
-    for key in keys_to_delete:
+    for key in st.session_state.keys():
         del st.session_state[key]
     st.cache_resource.clear()
     st.cache_data.clear()
     st.rerun()
 
-# Function for Vectorizing uploaded data into Astra DB
+# Check if user has upload permissions
+def has_upload_permissions(username):
+    """Check if user has upload permissions based on user_type in secrets"""
+    user_types = st.secrets.get("user_types", {})
+    user_type = user_types.get(username, "chat_only")
+    return user_type == "full_access"
+
+# Function for Vectorizing uploaded data into Astra DB (ONLY for admin users)
 def vectorize_text(uploaded_files):
-    global vectorstore # Added to ensure it uses the global vectorstore if not passed
-    global lang_dict   # Added for safety
-    if not vectorstore:
-        st.error(lang_dict.get('vectorstore_not_init_upload', "Vectorstore not initialized. Cannot process files."))
-        return
     for uploaded_file in uploaded_files:
         if uploaded_file is not None:
             
             # Write to temporary file
-            with tempfile.TemporaryDirectory() as temp_dir: # Corrected usage
-                file = uploaded_file
-                print(f"""Processing: {file.name}""") # Use file.name
-                temp_filepath = os.path.join(temp_dir, file.name) # Use temp_dir not temp_dir.name
-                with open(temp_filepath, 'wb') as f:
-                    f.write(file.getvalue())
+            temp_dir = tempfile.TemporaryDirectory()
+            file = uploaded_file
+            print(f"""Processing: {file}""")
+            temp_filepath = os.path.join(temp_dir.name, file.name)
+            with open(temp_filepath, 'wb') as f:
+                f.write(file.getvalue())
 
-                # Process TXT
-                if uploaded_file.name.endswith('txt'):
-                    with open(temp_filepath, 'r', encoding='utf-8') as f_txt: # Added encoding
-                        file_content_list = [f_txt.read()]
-                    text_splitter = RecursiveCharacterTextSplitter(
-                        chunk_size = 1500,
-                        chunk_overlap  = 100
-                    )
-                    texts = text_splitter.create_documents(file_content_list, [{'source': uploaded_file.name}] * len(file_content_list))
-                    vectorstore.add_documents(texts)
-                    st.info(f"{len(texts)} {lang_dict.get('load_text', 'text segments loaded')}")
-                
-                # Process PDF
-                elif uploaded_file.name.endswith('pdf'): # Use elif for exclusive conditions
-                    docs = []
-                    loader = PyPDFLoader(temp_filepath) # Path should be string
-                    docs.extend(loader.load())
+            # Process TXT
+            if uploaded_file.name.endswith('txt'):
+                file = [uploaded_file.read().decode()]
 
-                    text_splitter = RecursiveCharacterTextSplitter(
-                        chunk_size = 1500,
-                        chunk_overlap  = 100
-                    )
-                    pages = text_splitter.split_documents(docs)
-                    vectorstore.add_documents(pages)  
-                    st.info(f"{len(pages)} {lang_dict.get('load_pdf', 'PDF pages/segments loaded')}")
+                text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size = 1500,
+                    chunk_overlap  = 100
+                )
 
-                # Process CSV
-                elif uploaded_file.name.endswith('csv'): # Use elif
-                    docs = []
-                    loader = CSVLoader(temp_filepath, encoding='utf-8') # Added encoding
-                    docs.extend(loader.load())
+                texts = text_splitter.create_documents(file, [{'source': uploaded_file.name}])
+                vectorstore.add_documents(texts)
+                st.info(f"{len(texts)} {lang_dict['load_text']}")
+            
+            # Process PDF
+            if uploaded_file.name.endswith('pdf'):
+                docs = []
+                loader = PyPDFLoader(temp_filepath)
+                docs.extend(loader.load())
 
-                    vectorstore.add_documents(docs)
-                    st.info(f"{len(docs)} {lang_dict.get('load_csv', 'CSV documents/rows loaded')}")
+                text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size = 1500,
+                    chunk_overlap  = 100
+                )
 
+                pages = text_splitter.split_documents(docs)
+                vectorstore.add_documents(pages)  
+                st.info(f"{len(pages)} {lang_dict['load_pdf']}")
 
-# Load data from URLs
-def vectorize_url(urls_list): # Renamed parameter
-    global vectorstore # Added
-    global lang_dict   # Added
-    if not vectorstore:
-        st.error(lang_dict.get('vectorstore_not_init_url', "Vectorstore not initialized. Cannot process URLs."))
-        return
+            # Process CSV
+            if uploaded_file.name.endswith('csv'):
+                docs = []
+                loader = CSVLoader(temp_filepath)
+                docs.extend(loader.load())
+
+                vectorstore.add_documents(docs)
+                st.info(f"{len(docs)} {lang_dict['load_csv']}")
+
+# Load data from URLs (ONLY for admin users)
+def vectorize_url(urls):
     # Create the text splitter
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size = 1500,
         chunk_overlap  = 100
     )
 
-    for url_item in urls_list: # Use the renamed parameter
-        url = url_item.strip() # Clean each URL
-        if not url: # Skip if URL is empty after stripping
-            continue
+    for url in urls:
         try:
-            loader = WebBaseLoader(url) # Removed [url] as WebBaseLoader takes single URL or list
+            loader = WebBaseLoader(url)
             docs = loader.load()    
             pages = text_splitter.split_documents(docs)
             print (f"Loading from URL: {pages}")
             vectorstore.add_documents(pages)  
-            st.info(f"{len(pages)} {lang_dict.get('url_pages_loaded','loaded')}") # Used .get
+            st.info(f"{len(pages)} loaded")
         except Exception as e:
-            st.info(f"{lang_dict.get('url_error', 'An error occurred')}:", e) # Used .get
-
+            st.info(f"An error occurred:", e)
 
 # Define the prompt
-def get_prompt(type_param, current_custom_prompt, current_language_code): # Renamed parameters
+def get_prompt(type):
     template = ''
-    # Ensure language is a string for f-string, use global `language` if current_language_code is not passed properly
-    lang_code_for_fstring = current_language_code if isinstance(current_language_code, str) else language
 
-    base_template_text = f"""Use the following context to answer the question:
+    if type == 'Extended results':
+        print ("Prompt type: Extended results")
+        template = f"""You're a helpful AI assistant tasked to answer the user's questions.
+You're friendly and you answer extensively with multiple sentences. You prefer to use bulletpoints to summarize.
+If the question states the name of the user, just say 'Thanks, I'll use this information going forward'.
+If you don't know the answer, just say 'I do not know the answer'.
+
+Use the following context to answer the question:
 {{context}}
 
 Use the following chat history to answer the question:
@@ -202,144 +196,113 @@ Use the following chat history to answer the question:
 Question:
 {{question}}
 
-Answer in {lang_code_for_fstring}:"""
+Answer in {language}:"""
 
-    if type_param == 'Extended results':
-        print ("Prompt type: Extended results")
-        template = f"""You're a helpful AI assistant tasked to answer the user's questions.
-You're friendly and you answer extensively with multiple sentences. You prefer to use bulletpoints to summarize.
-If the question states the name of the user, just say 'Thanks, I'll use this information going forward'.
-If you don't know the answer, just say 'I do not know the answer'.
-{base_template_text}"""
-
-    elif type_param == 'Short results': # Use elif
+    if type == 'Short results':
         print ("Prompt type: Short results")
         template = f"""You're a helpful AI assistant tasked to answer the user's questions.
 You answer in an exceptionally brief way.
 If the question states the name of the user, just say 'Thanks, I'll use this information going forward'.
 If you don't know the answer, just say 'I do not know the answer'.
-{base_template_text}"""
 
-    elif type_param == 'Custom': # Use elif
+Use the following context to answer the question:
+{{context}}
+
+Use the following chat history to answer the question:
+{{chat_history}}
+
+Question:
+{{question}}
+
+Answer in {language}:"""
+
+    if type == 'Custom':
         print ("Prompt type: Custom")
-        template = str(current_custom_prompt) if current_custom_prompt else base_template_text # Ensure string and provide fallback
-    else: # Default case
-        template = base_template_text
-
+        template = custom_prompt
 
     return ChatPromptTemplate.from_messages([("system", template)])
 
 # Get the OpenAI Chat Model
-# Original function name was load_model, changed to load_model_cached for clarity with @st.cache_resource
-@st.cache_resource(show_spinner=True) # Simplified spinner
-def load_model_cached(): # Renamed to avoid conflict
-    print(f"""load_model_cached""")
+def load_model():
+    print(f"""load_model""")
     # Get the OpenAI Chat Model
     return ChatOpenAI(
         temperature=0.3,
-        model='gpt-4-1106-preview', # Consider changing to gpt-4o or newer
+        model='gpt-4-1106-preview',
         streaming=True,
-        verbose=True # Often set to False for production
+        verbose=True
     )
 
 # Get the Retriever
-def load_retriever(current_vectorstore, top_k_vs_param): # Renamed parameters
-    print(f"""load_retriever with top_k_vectorstore='{top_k_vs_param}'""")
+def load_retriever(top_k_vectorstore):
+    print(f"""load_retriever with top_k_vectorstore='{top_k_vectorstore}'""")
     # Get the Retriever from the Vectorstore
-    if not current_vectorstore: # Add check
-        return None
-    return current_vectorstore.as_retriever(
-        search_kwargs={"k": top_k_vs_param}
+    return vectorstore.as_retriever(
+        search_kwargs={"k": top_k_vectorstore}
     )
 
-@st.cache_resource(show_spinner=True) # Simplified spinner
-def load_memory_cached(_chat_history, top_k_hist_param): # Renamed parameters
-    print(f"""load_memory_cached with top-k={top_k_hist_param}""")
-    if not _chat_history: # Add check
-        return None
+@st.cache_resource()
+def load_memory(top_k_history):
+    print(f"""load_memory with top-k={top_k_history}""")
     return ConversationBufferWindowMemory(
-        chat_memory=_chat_history, # Use the passed parameter
+        chat_memory=chat_history,
         return_messages=True,
-        k=top_k_hist_param,
+        k=top_k_history,
         memory_key="chat_history",
         input_key="question",
         output_key='answer',
     )
 
-def generate_queries_chain(current_model, current_language): # Renamed and added parameters
-    if not current_model: return None # Add check
-    prompt_text = f"""You are a helpful assistant that generates multiple search queries based on a single input query in language {current_language}.
+def generate_queries():
+    prompt = f"""You are a helpful assistant that generates multiple search queries based on a single input query in language {language}.
 Generate multiple search queries related to: {{original_query}}
 OUTPUT (4 queries):"""
 
-    return ChatPromptTemplate.from_messages([("system", prompt_text)]) | current_model | StrOutputParser() | (lambda x: x.split("\n"))
+    return ChatPromptTemplate.from_messages([("system", prompt)]) | model | StrOutputParser() | (lambda x: x.split("\n"))
 
-
-def reciprocal_rank_fusion(results: list[list], k_rrf=60): # Renamed parameter
-    from langchain.load import dumps, loads # Local import
+def reciprocal_rank_fusion(results: list[list], k=60):
+    from langchain.load import dumps, loads
 
     fused_scores = {}
-    for docs_list_item in results: # Renamed variable for clarity
-        if not isinstance(docs_list_item, list): continue # Skip if not a list
-        for rank, doc in enumerate(docs_list_item):
-            try:
-                doc_str = dumps(doc) # This expects Langchain Document or similar serializable object
-                if doc_str not in fused_scores:
-                    fused_scores[doc_str] = 0
-                # previous_score = fused_scores[doc_str] # This variable was unused
-                fused_scores[doc_str] += 1 / (rank + k_rrf)
-            except Exception as e:
-                print(f"Could not dump/process doc in RRF: {e}") # Log error
-                continue # Skip this doc
+    for docs in results:
+        # Assumes the docs are returned in sorted order of relevance
+        for rank, doc in enumerate(docs):
+            doc_str = dumps(doc)
+            if doc_str not in fused_scores:
+                fused_scores[doc_str] = 0
+            previous_score = fused_scores[doc_str]
+            fused_scores[doc_str] += 1 / (rank + k)
 
-    reranked_results = []
-    for doc_s, score in sorted(fused_scores.items(), key=lambda x: x[1], reverse=True):
-        try:
-            reranked_results.append((loads(doc_s), score))
-        except Exception as e:
-            print(f"Could not load/process doc_s in RRF: {e}")
-            continue
+    reranked_results = [
+        (loads(doc), score)
+        for doc, score in sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
+    ]
     return reranked_results
 
-
 # Describe the image based on OpenAI
-def describeImage(image_bin_param, lang_param): # Renamed parameters
+def describeImage(image_bin, language):
     print ("describeImage")
-    # Ensure openai.api_key is set, typically from secrets or environment
-    if not (st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")):
-        st.error("OpenAI API Key not configured.")
-        return None
-    
-    # Initialize client inside the function or ensure it's globally available and initialized
-    client = openai.OpenAI(api_key=st.secrets.get("OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY")))
-
-    image_base64 = base64.b64encode(image_bin_param).decode()
-    try:
-        response = client.chat.completions.create( # Use the client instance
-            model="gpt-4-vision-preview",
-            messages=[
+    image_base64 = base64.b64encode(image_bin).decode()
+    response = openai.chat.completions.create(
+        model="gpt-4-vision-preview",
+        messages=[
+            {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": f"Provide a search text for the main topic of the image writen in {language}"},
                 {
-                "role": "user",
-                "content": [
-                    #{"type": "text", "text": "Describe the image in detail"},
-                    {"type": "text", "text": f"Provide a search text for the main topic of the image writen in {lang_param}"},
-                    {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{image_base64}",
-                    },
-                    },
-                ],
-                }
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{image_base64}",
+                },
+                },
             ],
-            max_tokens=4096,  # default max tokens is low so set higher
-        )
-        print (f"describeImage result: {response}")
-        return response
-    except Exception as e:
-        st.error(f"Error in describeImage: {e}")
-        return None
-
+            }
+        ],
+        max_tokens=4096,
+    )
+    print (f"describeImage result: {response}")
+    return response
 
 ##################
 ### Data Cache ###
@@ -347,142 +310,70 @@ def describeImage(image_bin_param, lang_param): # Renamed parameters
 
 # Cache localized strings
 @st.cache_data()
-def load_localization(locale_param): # Renamed parameter
-    print(f"load_localization for: {locale_param}")
-    try:
-        df = pd.read_csv("./customizations/localization.csv", encoding='utf-8') # Added encoding
-        df_lang = df.query(f"locale == '{locale_param}'")
-        if df_lang.empty and locale_param != "en_US": # Fallback to en_US
-            print(f"Locale {locale_param} not found, attempting en_US.")
-            df_lang = df.query("locale == 'en_US'")
-        if df_lang.empty: # If en_US also not found
-            print("Warning: Neither specified locale nor en_US found in localization.csv. Using minimal defaults.")
-            return {"assistant_welcome": "Welcome!", "logout_caption": "Logged in as", "logout_button": "Logout", "assistant_question": "Your question...", "login_error": "Login failed."}
-        # Create and return a dictionary of key/values.
-        lang_dict_loaded = pd.Series(df_lang.value.values,index=df_lang.key).to_dict() # Renamed
-        return lang_dict_loaded
-    except FileNotFoundError:
-        print("ERROR: localization.csv not found. Using minimal defaults.")
-        return {"assistant_welcome": "Welcome! (localization.csv missing)", "logout_caption": "Logged in as", "logout_button": "Logout", "assistant_question": "Your question...", "login_error": "Login failed."}
-    except Exception as e: # Catch other potential errors during CSV processing
-        print(f"Error loading localization.csv: {e}. Using minimal defaults.")
-        return {"assistant_welcome": "Welcome! (localization error)", "logout_caption": "Logged in as", "logout_button": "Logout", "assistant_question": "Your question...", "login_error": "Login failed."}
-
+def load_localization(locale):
+    print("load_localization")
+    # Load in the text bundle and filter by language locale
+    df = pd.read_csv("./customizations/localization.csv")
+    df = df.query(f"locale == '{locale}'")
+    # Create and return a dictionary of key/values.
+    lang_dict = {df.key.to_list()[i]:df.value.to_list()[i] for i in range(len(df.key.to_list()))}
+    return lang_dict
 
 # Cache localized strings
 @st.cache_data()
-def load_rails(username_param): # Renamed parameter
-    print(f"load_rails for {username_param}")
-    try:
-        df = pd.read_csv("./customizations/rails.csv", encoding='utf-8') # Added encoding
-        df = df.query(f"username == '{username_param}'")
-        if df.empty:
-            return {} # No rails for this user
-        # Create and return a dictionary of key/values.
-        rails_dict_loaded = pd.Series(df.value.values,index=df.key).to_dict() # Renamed
-        return rails_dict_loaded
-    except FileNotFoundError:
-        print("Warning: rails.csv not found. No rails loaded.")
-        return {}
-    except Exception as e: # Catch other potential errors
-        print(f"Error loading rails for {username_param}: {e}")
-        return {}
-
+def load_rails(username):
+    print("load_rails")
+    # Load in the rails bundle and filter by username
+    df = pd.read_csv("./customizations/rails.csv")
+    df = df.query(f"username == '{username}'")
+    # Create and return a dictionary of key/values.
+    rails_dict = {df.key.to_list()[i]:df.value.to_list()[i] for i in range(len(df.key.to_list()))}
+    return rails_dict
 
 #############
 ### Login ###
 #############
 
-# Initialize lang_dict with minimal defaults BEFORE login attempt so st.error in check_password can use it
-lang_dict = {"login_error": '😕 User not known or password incorrect'}
+# Check for username/password and set the username accordingly
 if not check_password():
     st.stop()  # Do not continue if check_password is not True.
 
-username = st.session_state.user # Set by check_password()
-# Load full lang_dict after successful login
-language = st.secrets.get("languages", {}).get(username, "es_ES") # Default to Spanish, use .get for safety
-lang_dict = load_localization(language) # Now load the full dictionary
+username = st.session_state.user
+language = st.secrets.languages[username]
+lang_dict = load_localization(language)
 
 #######################
 ### Resources Cache ###
 #######################
 
 # Cache OpenAI Embedding for future runs
-@st.cache_resource(show_spinner=lang_dict.get('load_embedding', "Loading Embeddings...")) # Use .get
-def load_embedding_rc(): # Renamed to avoid conflict with global `embedding`
-    print("load_embedding_rc")
+@st.cache_resource(show_spinner=lang_dict['load_embedding'])
+def load_embedding():
+    print("load_embedding")
     # Get the OpenAI Embedding
-    try:
-        # Ensure API key is fetched correctly from secrets
-        openai_api_key_val = st.secrets.get("OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY"))
-        if not openai_api_key_val:
-            st.error("OpenAI API Key is not configured in st.secrets or environment variables.")
-            return None
-        return OpenAIEmbeddings(openai_api_key=openai_api_key_val)
-    except Exception as e:
-        st.error(f"Error loading OpenAI Embeddings: {e}")
-        return None
-
+    return OpenAIEmbeddings()
 
 # Cache Vector Store for future runs
-@st.cache_resource(show_spinner=lang_dict.get('load_vectorstore', "Loading Vectorstore...")) # Use .get
-def load_vectorstore_rc(username_param, embedding_instance): # Renamed, pass embedding_instance
-    print(f"load_vectorstore_rc for {username_param}")
-    if not embedding_instance: # Check if embedding was loaded
-        st.error("Embedding model not loaded. Cannot initialize vector store.")
-        return None
-    try:
-        # Get the vectorstore store from Astra DB
-        # Ensure secrets are used correctly
-        astra_token_val = st.secrets.get("ASTRA_TOKEN")
-        astra_endpoint_val = st.secrets.get("ASTRA_ENDPOINT", os.environ.get("ASTRA_ENDPOINT")) # Allow fallback to ENV for endpoint
-        astra_keyspace_val = st.secrets.get("ASTRA_KEYSPACE") # Optional keyspace from secrets
-
-        if not astra_token_val or not astra_endpoint_val:
-            st.error("Astra DB Token or API Endpoint not found in st.secrets.")
-            return None
-
-        return AstraDB(
-            embedding=embedding_instance, # Use passed embedding_instance
-            collection_name=f"vector_context_{username_param}",
-            token=astra_token_val,
-            api_endpoint=astra_endpoint_val,
-            namespace=astra_keyspace_val # Pass namespace if using specific keyspace
-        )
-    except Exception as e:
-        st.error(f"Error initializing AstraDB vector store: {e}")
-        return None
+@st.cache_resource(show_spinner=lang_dict['load_vectorstore'])
+def load_vectorstore(username):
+    print(f"load_vectorstore for {username}")
+    # Get the load_vectorstore store from Astra DB
+    return AstraDB(
+        embedding=embedding,
+        collection_name=f"vector_context_{username}",
+        token=st.secrets["ASTRA_TOKEN"],
+        api_endpoint=os.environ["ASTRA_ENDPOINT"],
+    )
 
 # Cache Chat History for future runs
-@st.cache_resource(show_spinner=lang_dict.get('load_message_history', "Loading Chat History...")) # Use .get
-def load_chat_history_rc(username_param, session_id_param): # Renamed
-    print(f"load_chat_history_rc for {username_param}_{session_id_param}")
-    try:
-        astra_token_val = st.secrets.get("ASTRA_TOKEN")
-        astra_endpoint_val = st.secrets.get("ASTRA_ENDPOINT", os.environ.get("ASTRA_ENDPOINT"))
-        astra_keyspace_val = st.secrets.get("ASTRA_KEYSPACE")
-
-        if not astra_token_val or not astra_endpoint_val:
-            st.error("Astra DB Token or API Endpoint not found for chat history.")
-            return None
-
-        return AstraDBChatMessageHistory(
-            session_id=f"{username_param}_{str(session_id_param)}", # Ensure session_id is string
-            api_endpoint=astra_endpoint_val,
-            token=astra_token_val,
-            keyspace_name=astra_keyspace_val # Pass keyspace_name
-        )
-    except Exception as e:
-        st.error(f"Error initializing AstraDB chat history: {e}")
-        return None
-
-# Load resources after login and lang_dict is fully available
-embedding = load_embedding_rc() # Call renamed cached function
-if embedding:
-    vectorstore = load_vectorstore_rc(username, embedding) # Pass username and loaded embedding
-if vectorstore: # Only load chat history if vectorstore was successful (implies Astra creds are ok)
-    chat_history = load_chat_history_rc(username, st.session_state.session_id)
-
+@st.cache_resource(show_spinner=lang_dict['load_message_history'])
+def load_chat_history(username):
+    print(f"load_chat_history for {username}_{st.session_state.session_id}")
+    return AstraDBChatMessageHistory(
+        session_id=f"{username}_{st.session_state.session_id}",
+        api_endpoint=os.environ["ASTRA_ENDPOINT"],
+        token=st.secrets["ASTRA_TOKEN"],
+    )
 
 #####################
 ### Session state ###
@@ -490,7 +381,7 @@ if vectorstore: # Only load chat history if vectorstore was successful (implies 
 
 # Start with empty messages, stored in session state
 if 'messages' not in st.session_state:
-    st.session_state.messages = [AIMessage(content=lang_dict.get('assistant_welcome', "Welcome!"))] # Used .get
+    st.session_state.messages = [AIMessage(content=lang_dict['assistant_welcome'])]
 
 ############
 ### Main ###
@@ -498,333 +389,252 @@ if 'messages' not in st.session_state:
 
 # Show a custom welcome text or the default text
 try:
-    # Ensure username is valid for path construction
-    safe_username = "".join(c if c.isalnum() else "_" for c in username) # Sanitize username for path
-    welcome_file = Path(f"./customizations/welcome/{safe_username}.md")
-    if welcome_file.is_file():
-        st.markdown(welcome_file.read_text(encoding='utf-8'))
-    else: # Fallback to default if user-specific not found
-        st.markdown(Path('./customizations/welcome/default.md').read_text(encoding='utf-8'))
-except FileNotFoundError: # Specifically catch if default.md is also missing
-    st.markdown(lang_dict.get('assistant_welcome', "Welcome!")) # Fallback if no md files
-except Exception as e: # Catch other errors
-    print(f"Error loading welcome.md: {e}")
-    st.markdown(lang_dict.get('assistant_welcome', "Welcome!"))
-
+    st.markdown(Path(f"""./customizations/welcome/{username}.md""").read_text())
+except:
+    st.markdown(Path('./customizations/welcome/default.md').read_text())
 
 # Show a custom logo (svg or png) or the DataStax logo
 with st.sidebar:
     try:
-        safe_username_logo = "".join(c if c.isalnum() else "_" for c in username) # Sanitize
-        user_logo_svg_path = Path(f"./customizations/logo/{safe_username_logo}.svg")
-        user_logo_png_path = Path(f"./customizations/logo/{safe_username_logo}.png")
-        default_logo_path = Path('./customizations/logo/default.svg')
-        
-        logo_to_show = None
-        if user_logo_svg_path.is_file():
-            logo_to_show = str(user_logo_svg_path)
-        elif user_logo_png_path.is_file():
-            logo_to_show = str(user_logo_png_path)
-        elif default_logo_path.is_file():
-            logo_to_show = str(default_logo_path)
-
-        if logo_to_show:
-            st.image(logo_to_show, use_column_width="always")
-        else:
-            st.text("Logo") # Fallback
-        st.text('') # For spacing
-    except Exception as e:
-        print(f"Error loading logo: {e}")
-        st.text("Logo") # Fallback
+        st.image(f"""./customizations/logo/{username}.svg""", use_column_width="always")
+        st.text('')
+    except:
+        try:
+            st.image(f"""./customizations/logo/{username}.png""", use_column_width="always")
+            st.text('')
+        except:
+            st.image('./customizations/logo/default.svg', use_column_width="always")
+            st.text('')
 
 # Logout button
 with st.sidebar:
-    st.markdown(f"""{lang_dict.get('logout_caption', "Logged in as")} :orange[{username}]""")
-    logout_button = st.button(lang_dict.get('logout_button', "Logout"))
+    st.markdown(f"""{lang_dict['logout_caption']} :orange[{username}]""")
+    logout_button = st.button(lang_dict['logout_button'])
     if logout_button:
         logout()
 
 with st.sidebar:
     st.divider()
 
-# Initialize resources that might depend on prior initializations
-# model is loaded here as it doesn't depend on username directly like others
-model = load_model_cached() # Original 'load_model' renamed to 'load_model_cached' for cache consistency
+# Initialize
+with st.sidebar:
+    rails_dict = load_rails(username)
+    embedding = load_embedding()
+    vectorstore = load_vectorstore(username)
+    chat_history = load_chat_history(username)
 
 # Options panel
 with st.sidebar:
+    st.subheader("⚙️ Configuración del Chat")
+    
     # Chat history settings
-    rails_dict = load_rails(username) # Load rails
-    disable_chat_history = st.toggle(lang_dict.get('disable_chat_history',"Disable Chat History?"), key="ch_toggle") # Added .get
+    disable_chat_history = st.toggle(lang_dict['disable_chat_history'])
+    top_k_history = st.slider(lang_dict['k_chat_history'], 1, 50, 5, disabled=disable_chat_history)
+    memory = load_memory(top_k_history if not disable_chat_history else 0)
+    delete_history = st.button(lang_dict['delete_chat_history_button'], disabled=disable_chat_history)
+    if delete_history:
+        with st.spinner(lang_dict['deleting_chat_history']):
+            memory.clear()
     
-    # Get default from secrets or use a hardcoded default
-    default_top_k_history = st.secrets.get("DEFAULT_TOP_K_HISTORY", {}).get(username, 5)
-    top_k_history = st.slider(lang_dict.get('k_chat_history',"K for Chat History"), 1, 50, default_top_k_history, disabled=disable_chat_history, key="ch_slider") # Added .get
-    
-    # Load memory after top_k_history is set
-    if chat_history: # Ensure chat_history object exists
-        memory = load_memory_cached(chat_history, top_k_history if not disable_chat_history else 0)
-    else:
-        memory = None # Set memory to None if chat_history failed to load
-
-    if memory: # Only show button if memory is successfully loaded
-        delete_history = st.button(lang_dict.get('delete_chat_history_button', "Delete Chat History"), disabled=disable_chat_history, key="del_hist_btn") # Added .get
-        if delete_history:
-            with st.spinner(lang_dict.get('deleting_chat_history', "Deleting...")): # Added .get
-                memory.clear()
-            st.session_state.messages = [AIMessage(content=lang_dict.get('assistant_welcome', "Welcome!"))] # Reset messages
-            st.rerun() # Rerun to clear displayed messages
-
     # Vector store settings
-    disable_vector_store = st.toggle(lang_dict.get('disable_vector_store', "Disable Vector Store?"), key="vs_toggle") # Added .get
-    default_top_k_vectorstore = st.secrets.get("DEFAULT_TOP_K_VECTORSTORE", {}).get(username, 5)
-    top_k_vectorstore = st.slider(lang_dict.get('top_k_vector_store', "Top-K for Vector Store"), 1, 50, default_top_k_vectorstore, disabled=disable_vector_store, key="vs_slider") # Added .get
-    
-    rag_strategy_options = ('Basic Retrieval', 'Maximal Marginal Relevance', 'Fusion')
-    default_strategy_val = st.secrets.get("DEFAULT_RAG_STRATEGY", {}).get(username, 'Basic Retrieval')
-    strategy_idx = rag_strategy_options.index(default_strategy_val) if default_strategy_val in rag_strategy_options else 0
-    strategy = st.selectbox(lang_dict.get('rag_strategy', "RAG Strategy"), rag_strategy_options, index=strategy_idx, help=lang_dict.get('rag_strategy_help', "Help"), disabled=disable_vector_store, key="rag_selectbox") # Added .get
+    disable_vector_store = st.toggle(lang_dict['disable_vector_store'])
+    top_k_vectorstore = st.slider(lang_dict['top_k_vector_store'], 1, 50, 5, disabled=disable_vector_store)
+    strategy = st.selectbox(lang_dict['rag_strategy'], ('Basic Retrieval', 'Maximal Marginal Relevance', 'Fusion'), help=lang_dict['rag_strategy_help'], disabled=disable_vector_store)
 
-    custom_prompt_text_val = '' # Renamed
-    custom_prompt_idx_val = 0 # Renamed
+    custom_prompt_text = ''
+    custom_prompt_index = 0
     try:
-        safe_username_prompt = "".join(c if c.isalnum() else "_" for c in username) # Sanitize
-        custom_prompt_file = Path(f"""./customizations/prompt/{safe_username_prompt}.txt""")
-        default_prompt_file = Path(f"""./customizations/prompt/default.txt""")
-        if custom_prompt_file.is_file():
-            custom_prompt_text_val = custom_prompt_file.read_text(encoding='utf-8') # Added encoding
-            custom_prompt_idx_val = 2 # Index for 'Custom'
-        elif default_prompt_file.is_file():
-            custom_prompt_text_val = default_prompt_file.read_text(encoding='utf-8') # Added encoding
-            custom_prompt_idx_val = 0 # Or other appropriate default index
-        else: # Fallback if no prompt files
-            custom_prompt_text_val = "Fallback prompt if files are missing."
-    except Exception as e:
-        print(f"Error loading prompt file: {e}")
-        custom_prompt_text_val = "Error loading prompt."
+        custom_prompt_text = open(f"""./customizations/prompt/{username}.txt""").read()
+        custom_prompt_index = 2
+    except:
+        custom_prompt_text = open(f"""./customizations/prompt/default.txt""").read()
+        custom_prompt_index = 0
 
-    prompt_type_options = ('Short results', 'Extended results', 'Custom')
-    prompt_type = st.selectbox(lang_dict.get('system_prompt', "System Prompt"), prompt_type_options, index=custom_prompt_idx_val, key="prompt_select") # Added .get
-    custom_prompt = st.text_area(lang_dict.get('custom_prompt', "Custom Prompt Text"), custom_prompt_text_val, help=lang_dict.get('custom_prompt_help', "Help"), disabled=(prompt_type != 'Custom'), key="custom_prompt_text") # Added .get
-    print(f"""Sidebar Config: DisableVS={disable_vector_store}, K_Hist={top_k_history}, K_VS={top_k_vectorstore}, Strategy={strategy}, PromptType={prompt_type}""")
+    prompt_type = st.selectbox(lang_dict['system_prompt'], ('Short results', 'Extended results', 'Custom'), index=custom_prompt_index)
+    custom_prompt = st.text_area(lang_dict['custom_prompt'], custom_prompt_text, help=lang_dict['custom_prompt_help'], disabled=(prompt_type != 'Custom'))
+    print(f"""{disable_vector_store}, {top_k_history}, {top_k_vectorstore}, {strategy}, {prompt_type}""")
 
 with st.sidebar:
     st.divider()
 
-# --- BLOQUES DE INGESTA COMENTADOS ---
-# # Include the upload form for new data to be Vectorized
-# with st.sidebar:
-#     # st.subheader(lang_dict.get('upload_header', "Upload Documents")) # Example using .get
-#     uploaded_files = st.file_uploader(lang_dict.get('load_context', "Upload Files (TXT, PDF, CSV)"), type=['txt', 'pdf', 'csv'], accept_multiple_files=True, key="fileuploader")
-#     upload_files_button = st.button(lang_dict.get('load_context_button', "Process Files"), key="uploadbutton") # Renamed variable
-#     if upload_files_button and uploaded_files:
-#         vectorize_text(uploaded_files, vectorstore, lang_dict) # Pass dependencies
+# ADMIN UPLOAD SECTION - Only show if user has upload permissions
+if has_upload_permissions(username):
+    with st.sidebar:
+        st.subheader("🔧 Panel de Administración")
+        st.caption("⚠️ Sección solo para administradores")
+        
+        # Include the upload form for new data to be Vectorized
+        uploaded_files = st.file_uploader(lang_dict['load_context'], type=['txt', 'pdf', 'csv'], accept_multiple_files=True)
+        upload = st.button(lang_dict['load_context_button'])
+        if upload and uploaded_files:
+            vectorize_text(uploaded_files)
 
-# # Include the upload form for URLs be Vectorized
-# with st.sidebar:
-#     # st.subheader(lang_dict.get('url_upload_header', "Load from URLs")) # Example using .get
-#     urls_text_area = st.text_area(lang_dict.get('load_from_urls', "Enter URLs (comma-separated)"), help=lang_dict.get('load_from_urls_help', "One URL per line or comma-separated"), key="urltextarea") # Renamed variable
-#     urls_to_process = [url.strip() for url in urls_text_area.split(',') if url.strip()] # Process here
-#     upload_urls_button = st.button(lang_dict.get('load_from_urls_button', "Process URLs"), key="uploadurlbutton") # Renamed variable
-#     if upload_urls_button and urls_to_process:
-#         vectorize_url(urls_to_process, vectorstore, lang_dict) # Pass dependencies
+        # Include the upload form for URLs be Vectorized
+        urls = st.text_area(lang_dict['load_from_urls'], help=lang_dict['load_from_urls_help'])
+        urls = urls.split(',')
+        upload = st.button(lang_dict['load_from_urls_button'])
+        if upload and urls:
+            vectorize_url(urls)
 
-# # Drop the vector data and start from scratch
-# # This is controlled by secrets.toml: [delete_option] username = "True" or "False"
-# delete_option_setting = str(st.secrets.get("delete_option", {}).get(username, "False")).lower() == 'true' # Safer get
-# if delete_option_setting:
-#     with st.sidebar:
-#         st.caption(lang_dict.get('delete_context', "Delete all context for this user.")) # Use .get
-#         submitted_delete_btn = st.button(lang_dict.get('delete_context_button', "⚠️ Delete Context"), key="deletecontextbutton") # Renamed variable
-#         if submitted_delete_btn:
-#             if vectorstore and memory: # Check if resources are available
-#                 with st.spinner(lang_dict.get('deleting_context', "Deleting context...")): # Use .get
-#                     try:
-#                         vectorstore.clear() # Assuming this method exists and works for AstraDB via Langchain
-#                         memory.clear()
-#                         st.session_state.messages = [AIMessage(content=lang_dict.get('assistant_welcome', "Welcome! Context cleared."))] # Use .get
-#                         st.success("Context deleted.")
-#                     except Exception as e:
-#                         st.error(f"Error clearing context: {e}")
-#                 st.rerun()
-#             else:
-#                 st.warning("Vectorstore or memory not available. Cannot delete context.")
-# --- FIN DE BLOQUES COMENTADOS ---
+        # Drop the vector data and start from scratch
+        if (username in st.secrets['delete_option'] and st.secrets.delete_option[username] == 'True'):
+            st.caption(lang_dict['delete_context'])
+            submitted = st.button(lang_dict['delete_context_button'])
+            if submitted:
+                with st.spinner(lang_dict['deleting_context']):
+                    vectorstore.clear()
+                    memory.clear()
+                    st.session_state.messages = [AIMessage(content=lang_dict['assistant_welcome'])]
 
+else:
+    # Show info message for chat-only users
+    with st.sidebar:
+        st.info("💬 **Modo Consulta**\n\nEsta versión está configurada únicamente para consultas. Los documentos son gestionados por el equipo administrador.", icon="ℹ️")
 
 with st.sidebar:
     st.divider()
 
 # Draw rails
 with st.sidebar:
-    st.subheader(lang_dict.get('rails_1', "Suggestions")) # Use .get
-    st.caption(lang_dict.get('rails_2', "Try asking:")) # Use .get
-    if rails_dict:
-        for i in sorted(rails_dict.keys()): # Sort for consistent order
-            st.markdown(f"{i}. {rails_dict[i]}")
-    else: # Handle empty rails_dict
-        st.markdown(lang_dict.get('no_rails_prompt', "No specific suggestions for you.")) # Use .get
-
+    st.subheader(lang_dict['rails_1'])
+    st.caption(lang_dict['rails_2'])
+    for i in rails_dict:
+        st.markdown(f"{i}. {rails_dict[i]}")
 
 # Draw all messages, both user and agent so far (every time the app reruns)
-for message_item in st.session_state.messages: # Renamed variable
-    if hasattr(message_item, 'type') and hasattr(message_item, 'content'):
-        st.chat_message(message_item.type).markdown(message_item.content)
-    # Fallback for dicts (though Langchain messages are objects)
-    elif isinstance(message_item, dict) and "role" in message_item and "content" in message_item:
-        st.chat_message(message_item["role"]).markdown(message_item["content"])
-
+for message in st.session_state.messages:
+    st.chat_message(message.type).markdown(message.content)
 
 # Now get a prompt from a user
-# Use a different key for chat_input to avoid conflict with other inputs
-question_text = st.chat_input(lang_dict.get('assistant_question', "Ask your question here..."), key="user_main_question_input") # Renamed and used .get
-
-st.session_state.question_from_text_input = bool(question_text) # Flag if question came from text input
-
-# --- BLOQUE DE CÁMARA COMENTADO ---
-# with st.sidebar:
-#     st.divider()
-#     # st.subheader(lang_dict.get('image_query_header', "Query with Image")) # Use .get
-#     # picture_data = st.camera_input(lang_dict.get('take_picture', "Take a picture"), key="main_camera_input") # Renamed
-#     # if picture_data:
-#     #     openai_api_key_val = st.secrets.get("OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY"))
-#     #     if openai_api_key_val: # Check if key is actually available
-#     #         # Ensure openai client is initialized if not done globally
-#     #         # openai.api_key = openai_api_key_val # This might be needed if not using instance
-            
-#     #         image_description_response = describeImage(picture_data.getvalue(), language) # Pass language
-#     #         if image_description_response and image_description_response.choices and image_description_response.choices[0].message.content:
-#     #             image_description_text = image_description_response.choices[0].message.content # Renamed
-#     #             # Only use if no text question was submitted simultaneously
-#     #             if not question_text and not st.session_state.question_from_text_input: 
-#     #                 question_text = image_description_text # This will be picked up below
-#     #                 st.info(f"{lang_dict.get('image_desc_as_question', 'Using image description as question:')} {question_text[:100]}...")
-#     #         else:
-#     #             st.error(lang_dict.get('image_desc_fail_error', "Could not get description from image."))
-#     #     else:
-#     #         st.error(lang_dict.get('openai_key_missing_camera_error', "OpenAI API Key not configured. Camera feature disabled."))
-# --- FIN DE BLOQUE DE CÁMARA COMENTADO ---
-
-
-if question_text: # If there is a question (from chat_input or potentially from camera if that logic was active)
-    print(f"Got question: {question_text}")
-            
-    st.session_state.messages.append(HumanMessage(content=question_text))
-    with st.chat_message('human'):
-        st.markdown(question_text)
-
-    with st.chat_message('assistant'):
-        response_placeholder = st.empty()
-        
-        # Initialize to defaults
-        retriever_instance = None # Renamed
-        relevant_docs_list = [] # Renamed
-
-        if vectorstore and not disable_vector_store:
-            retriever_instance = load_retriever(vectorstore, top_k_vectorstore) # Original function name
-        
-        if retriever_instance: # Check if retriever was successfully created
-            if strategy == 'Basic Retrieval':
-                relevant_docs_list = retriever_instance.get_relevant_documents(query=question_text) # Pass k from slider
-            elif strategy == 'Maximal Marginal Relevance':
-                # MMR search is usually a method of the vectorstore itself, not the retriever
-                if vectorstore: # Ensure vectorstore is available
-                    relevant_docs_list = vectorstore.max_marginal_relevance_search(query=question_text, k=top_k_vectorstore, fetch_k=20) # fetch_k is often > k
-            elif strategy == 'Fusion':
-                if model and retriever_instance: # Model for query generation, retriever for subsequent searches
-                    query_gen_chain = generate_queries_chain(model, language) # Original function name
-                    if query_gen_chain:
-                        fusion_queries_list = query_gen_chain.invoke({"original_query": question_text})
-                        print(f"""Fusion queries: {fusion_queries_list}""")
-
-                        fusion_queries_display_text = f"""*{lang_dict.get('using_fusion_queries', "Using fusion queries:")}*\n""" # Renamed
-                        for i, fq_item in enumerate(fusion_queries_list): # Renamed
-                            fusion_queries_display_text += f"""\n{i+1}. :orange[{fq_item}]"""
-                        
-                        # Display fusion queries as an intermediate step (added to messages list later)
-                        # response_placeholder.markdown(fusion_queries_display_text) 
-                        st.session_state.messages.append(AIMessage(content=fusion_queries_display_text))
-                        # Rerun to show this intermediate message before the final answer streams
-                        # This might make the UX a bit jumpy, consider if this display is essential here
-
-                        retrieved_docs_for_fusion_lists = retriever_instance.map().invoke(fusion_queries_list) # list of lists
-                        fused_docs_with_scores_list = reciprocal_rank_fusion(retrieved_docs_for_fusion_lists) # Renamed
-                        relevant_docs_list = [doc_tuple[0] for doc_tuple in fused_docs_with_scores_list][:top_k_vectorstore] # Get top_k
-                        print(f"""Fusion results (docs): {relevant_docs_list}""")
-                    else: # Fallback if query_gen_chain failed
-                        relevant_docs_list = retriever_instance.get_relevant_documents(query=question_text)
-                else: # Fallback if model not available for query generation
-                    relevant_docs_list = retriever_instance.get_relevant_documents(query=question_text)
-        
-        # Prepare for LLM
-        final_llm_response_content = '' # Renamed
-        chat_history_for_llm_invoke = {"chat_history": []} # Renamed
-        if memory: # Check if memory exists
-            chat_history_for_llm_invoke = memory.load_memory_variables({})
-        print(f"Using memory: {chat_history_for_llm_invoke}")
-
-        if model: # Check if LLM model exists
-            current_prompt_obj = get_prompt(prompt_type, custom_prompt, language) # Renamed var
-            
-            inputs_map_for_chain = RunnableMap({ # Renamed var
-                'context': lambda x: x['context'],
-                'chat_history': lambda x: x['chat_history'], # This should be list of Message objects
-                'question': lambda x: x['question']
-            })
-            print(f"Using inputs map: {inputs_map_for_chain}")
-
-            full_rag_chain = inputs_map_for_chain | current_prompt_obj | model # Renamed var
-            print(f"Using full RAG chain: {full_rag_chain}")
-
-            try:
-                llm_response_object = full_rag_chain.invoke( # Renamed var
-                    {'question': question_text, 'chat_history': chat_history_for_llm_invoke.get('chat_history', []), 'context': relevant_docs_list}, 
-                    config={'callbacks': [StreamHandler(response_placeholder)]}
-                )
-                print(f"LLM Response object: {llm_response_object}")
-                final_llm_response_content = llm_response_object.content if hasattr(llm_response_object, 'content') else str(llm_response_object)
-            except Exception as e:
-                print(f"Error invoking RAG chain: {e}")
-                st.error(f"Error during RAG chain invocation: {e}")
-                final_llm_response_content = lang_dict.get("error_rag_chain", "Sorry, an error occurred while generating the response.")
-
-        else: # Model not loaded
-            final_llm_response_content = lang_dict.get("model_not_loaded_error", "AI Model is not available at the moment.")
-            st.warning(final_llm_response_content)
-
-
-        if memory: # Check if memory exists
-            memory.save_context({'question': question_text}, {'answer': final_llm_response_content})
-
-        # Append sources and history info to the final displayed message
-        message_to_display_final = final_llm_response_content # Renamed
-
-        if not disable_vector_store and relevant_docs_list:
-            message_to_display_final += f"\n\n*{lang_dict.get('sources_used', 'Sources:')}*"
-            displayed_sources_list_final = [] # Renamed
-            for doc_item_final in relevant_docs_list: # Renamed var
-                source_from_meta = doc_item_final.metadata.get('source', 'Unknown Source') if hasattr(doc_item_final, 'metadata') and doc_item_final.metadata else 'Unknown Source'
-                source_basename_final = os.path.basename(os.path.normpath(source_from_meta)) # Renamed
-                if source_basename_final not in displayed_sources_list_final:
-                    message_to_display_final += f"\n📙 :orange[{source_basename_final}]"
-                    displayed_sources_list_final.append(source_basename_final)
-        elif not disable_vector_store: # Vector store enabled but no relevant_docs found
-             message_to_display_final += f"\n\n*{lang_dict.get('no_docs_found_query', 'No specific documents found for this query in the knowledge base.')}*"
-
-
-        if not disable_chat_history and memory and chat_history_for_llm_invoke.get('chat_history', []): # Check memory also
-            num_history_pairs_final = len(chat_history_for_llm_invoke['chat_history']) // 2 # Renamed
-            message_to_display_final += f"\n\n*{lang_dict.get('chat_history_info_display', 'Chat history turns considered')}: ({num_history_pairs_final}/{top_k_history})*" # Used .get
-        
-        response_placeholder.markdown(message_to_display_final) # Update placeholder with final content
-        st.session_state.messages.append(AIMessage(content=message_to_display_final))
-    
-    # Reset question from session state if it was from camera (now a moot point as camera is commented)
-    # if "question" in st.session_state and not st.session_state.get("question_from_text_input", False):
-    # del st.session_state.question 
-    st.session_state.question_from_text_input = False # Reset flag
-
-
+question = st.chat_input(lang_dict['assistant_question'])
 with st.sidebar:
     st.divider()
-    st.caption(lang_dict.get("app_version_display", "v231227.01_no_user_ingest")) # Used .get, updated version
+    picture = st.camera_input(lang_dict['take_picture'])
+    if picture:
+        response = describeImage(picture.getvalue(), language)
+        picture_desc = response.choices[0].message.content
+        question = picture_desc
+
+if question:
+    print(f"Got question: {question}")
+           
+    # Add the prompt to messages, stored in session state
+    st.session_state.messages.append(HumanMessage(content=question))
+
+    # Draw the prompt on the page
+    print(f"Draw prompt")
+    with st.chat_message('human'):
+        st.markdown(question)
+
+    # Get model, retriever
+    model = load_model()
+    retriever = load_retriever(top_k_vectorstore)
+
+    # RAG Strategy
+    content = ''
+    fusion_queries = []
+    relevant_documents = []
+    if not disable_vector_store:
+        if strategy == 'Basic Retrieval':
+            # Basic naive RAG
+            relevant_documents = retriever.get_relevant_documents(query=question, k=top_k_vectorstore)
+        if strategy == 'Maximal Marginal Relevance':
+            relevant_documents = vectorstore.max_marginal_relevance_search(query=question, k=top_k_vectorstore)
+        if strategy == 'Fusion':
+            # Fusion: Generate new queries and retrieve most relevant documents based on that
+            generate_queries = generate_queries()
+            fusion_queries = generate_queries.invoke({"original_query": question})
+            print(f"""Fusion queries: {fusion_queries}""")
+
+            content += f"""
+    
+*{lang_dict['using_fusion_queries']}*  
+"""
+            for fq in fusion_queries:
+                content += f"""📙 :orange[{fq}]  
+"""
+            # Write the generated fusion queries
+            with st.chat_message('assistant'):
+                st.markdown(content)
+
+            # Add the answer to the messages session state
+            st.session_state.messages.append(AIMessage(content=content))
+
+            chain = generate_queries | retriever.map() | reciprocal_rank_fusion
+            relevant_documents = chain.invoke({"original_query": question})
+            print(f"""Fusion results: {relevant_documents}""")
+
+    # Get the results from Langchain
+    print(f"Chat message")
+    with st.chat_message('assistant'):
+        content = ''
+
+        # UI placeholder to start filling with agent response
+        response_placeholder = st.empty()
+
+        # Get chat history
+        history = memory.load_memory_variables({})
+        print(f"Using memory: {history}")
+
+        # Create the chain
+        inputs = RunnableMap({
+            'context': lambda x: x['context'],
+            'chat_history': lambda x: x['chat_history'],
+            'question': lambda x: x['question']
+        })
+        print(f"Using inputs: {inputs}")
+
+        chain = inputs | get_prompt(prompt_type) | model
+        print(f"Using chain: {chain}")
+
+        # Call the chain and stream the results into the UI
+        response = chain.invoke({'question': question, 'chat_history': history, 'context': relevant_documents}, config={'callbacks': [StreamHandler(response_placeholder)]})
+        print(f"Response: {response}")
+        content += response.content
+
+        # Add the result to memory (without the sources)
+        memory.save_context({'question': question}, {'answer': content})
+
+        # Write the sources used
+        if disable_vector_store:
+            content += f"""
+            
+*{lang_dict['no_context']}*
+"""
+        else:
+            content += f"""
+        
+*{lang_dict['sources_used']}*  
+"""
+        sources = []
+        for doc in relevant_documents:
+            if strategy == 'Fusion':
+                doc = doc[0]
+            print (f"""DOC: {doc}""")
+            source = doc.metadata['source']
+            page_content = doc.page_content
+            if source not in sources:
+                content += f"""📙 :orange[{os.path.basename(os.path.normpath(source))}]  
+"""
+                sources.append(source)
+
+        # Write the history used
+        if disable_chat_history:
+            content += f"""
+            
+*{lang_dict['no_chat_history']}*
+"""
+        else:
+            content += f"""
+
+*{lang_dict['chat_history_used']}: ({int(len(history['chat_history'])/2)} / {top_k_history})*
+"""
+
+        # Write the final answer without the cursor
+        response_placeholder.markdown(content)
+
+        # Add the answer to the messages session state
+        st.session_state.messages.append(AIMessage(content=content))
+
+with st.sidebar:
+    st.caption("v231227.01 - Chat Only Version")
