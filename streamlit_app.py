@@ -330,4 +330,259 @@ with st.sidebar:
     
     logo_to_display = None
     if user_logo_path_svg.is_file():
-        logo_to_display = str(user_logo
+        logo_to_display = str(user_logo_path_svg)
+    elif user_logo_path_png.is_file():
+        logo_to_display = str(user_logo_path_png)
+    elif default_logo_path.is_file():
+        logo_to_display = str(default_logo_path)
+
+    if logo_to_display:
+        st.image(logo_to_display, use_column_width="always")
+    else:
+        st.text("Logo") # Placeholder if no logo found
+    st.text('')
+
+
+with st.sidebar:
+    st.markdown(f"""{lang_dict.get('logout_caption', "Logged in as")} :orange[{username}]""")
+    logout_button = st.button(lang_dict.get('logout_button', "Logout"))
+    if logout_button:
+        logout()
+
+with st.sidebar:
+    st.divider()
+
+rails_dict = load_rails(username) # rails_dict loaded here
+
+with st.sidebar:
+    disable_chat_history = st.toggle(lang_dict.get('disable_chat_history', "Disable Chat History"), key="ch_toggle")
+    top_k_history = st.slider(lang_dict.get('k_chat_history', "K for Chat History"), 1, 10, 5, disabled=disable_chat_history, key="ch_slider")
+    
+    if chat_history and memory: # Ensure memory is not None
+        delete_history = st.button(lang_dict.get('delete_chat_history_button', "Delete Chat History"), disabled=disable_chat_history, key="del_ch_button")
+        if delete_history:
+            with st.spinner(lang_dict.get('deleting_chat_history', "Deleting...")):
+                memory.clear()
+            st.rerun()
+
+    disable_vector_store = st.toggle(lang_dict.get('disable_vector_store', "Disable Vector Store?"), key="vs_toggle")
+    top_k_vectorstore = st.slider(lang_dict.get('top_k_vector_store', "Top-K for Vector Store"), 1, 10, 5, disabled=disable_vector_store, key="vs_slider")
+    
+    rag_strategy_options = ('Basic Retrieval', 'Maximal Marginal Relevance', 'Fusion') # Define options
+    strategy = st.selectbox(lang_dict.get('rag_strategy', "RAG Strategy"), rag_strategy_options, help=lang_dict.get('rag_strategy_help',"Help"), disabled=disable_vector_store, key="rag_select")
+
+    custom_prompt_text_val = "" # Initialize
+    custom_prompt_idx_val = 0 # Default to first option
+    try:
+        user_prompt_file = Path(f"./customizations/prompt/{username}.txt")
+        default_prompt_file = Path("./customizations/prompt/default.txt")
+        if user_prompt_file.is_file():
+            custom_prompt_text_val = user_prompt_file.read_text(encoding='utf-8')
+            custom_prompt_idx_val = 2 # 'Custom'
+        elif default_prompt_file.is_file():
+            custom_prompt_text_val = default_prompt_file.read_text(encoding='utf-8')
+            # Determine index based on what default.txt implies, or set to 0 for 'Short results'
+        else:
+            # Provide a fallback if no prompt files are found
+            custom_prompt_text_val = "You are a helpful AI assistant. Answer based on context.\nContext: {context}\nHistory: {chat_history}\nQuestion: {question}"
+    except Exception as e:
+        print(f"Error loading prompt text: {e}")
+        custom_prompt_text_val = "Error loading prompt text."
+
+
+    prompt_type_options = ('Short results', 'Extended results', 'Custom')
+    prompt_type = st.selectbox(lang_dict.get('system_prompt', "System Prompt"), prompt_type_options, index=custom_prompt_idx_val, key="prompt_type_select")
+    custom_prompt = st.text_area(lang_dict.get('custom_prompt', "Custom Prompt"), custom_prompt_text_val, help=lang_dict.get('custom_prompt_help', "Help"), disabled=(prompt_type != 'Custom'), key="custom_prompt_area")
+    print(f"""Sidebar state: DS_VS={disable_vector_store}, K_Hist={top_k_history}, K_VS={top_k_vectorstore}, Strat={strategy}, PromptT={prompt_type}""")
+
+with st.sidebar:
+    st.divider()
+
+# --- BLOQUES DE INGESTA COMENTADOS ---
+# # Include the upload form for new data to be Vectorized
+# with st.sidebar:
+#     uploaded_files = st.file_uploader(lang_dict.get('load_context', "Upload context"), type=['txt', 'pdf', 'csv'], accept_multiple_files=True)
+#     upload = st.button(lang_dict.get('load_context_button', "Load context button"))
+#     if upload and uploaded_files:
+#         if vectorstore:
+#             vectorize_text(uploaded_files, vectorstore, lang_dict) # Pass dependencies
+#         else:
+#             st.error("Vectorstore not initialized. Cannot upload files.")
+
+
+# # Include the upload form for URLs be Vectorized
+# with st.sidebar:
+#     urls_raw_input = st.text_area(lang_dict.get('load_from_urls', "Load from URLs"), help=lang_dict.get('load_from_urls_help', "URLs help"))
+#     # Check if urls_raw_input is not None and not empty before splitting
+#     urls_list_from_input = [url.strip() for url in urls_raw_input.split(',')] if urls_raw_input and urls_raw_input.strip() else []
+#     upload_urls = st.button(lang_dict.get('load_from_urls_button', "Load from URLs button"))
+#     if upload_urls and urls_list_from_input:
+#         if vectorstore:
+#             vectorize_url(urls_list_from_input, vectorstore, lang_dict) # Pass dependencies
+#         else:
+#             st.error("Vectorstore not initialized. Cannot upload URLs.")
+
+# # Drop the vector data and start from scratch
+# # This is controlled by secrets.toml: [delete_option] username = "True" or "False"
+# delete_option_is_true = False
+# if 'delete_option' in st.secrets and username in st.secrets['delete_option']:
+#     delete_option_is_true = str(st.secrets.delete_option[username]).lower() == 'true'
+
+# if delete_option_is_true:
+#     with st.sidebar:
+#         st.caption(lang_dict.get('delete_context', "Delete Context Caption"))
+#         submitted_delete_button = st.button(lang_dict.get('delete_context_button', "Delete Context Button")) # Renamed var
+#         if submitted_delete_button:
+#             if vectorstore and memory: # Check both exist
+#                 with st.spinner(lang_dict.get('deleting_context', "Deleting...")):
+#                     vectorstore.clear()
+#                     memory.clear()
+#                     st.session_state.messages = [AIMessage(content=lang_dict.get('assistant_welcome', "Welcome!"))]
+#                 st.rerun() # Rerun to reflect changes
+#             else:
+#                 st.error("Cannot delete context: Vectorstore or Memory not available.")
+# --- FIN DE BLOQUES COMENTADOS ---
+
+
+with st.sidebar:
+    st.divider()
+
+# Draw rails
+with st.sidebar:
+    st.subheader(lang_dict.get('rails_1', "Suggestions"))
+    st.caption(lang_dict.get('rails_2', "Try asking:"))
+    if rails_dict:
+        for i in sorted(rails_dict.keys()):
+            st.markdown(f"{i}. {rails_dict[i]}")
+    else:
+        st.markdown(lang_dict.get('no_rails_available', "No suggestions available."))
+
+
+# Draw all messages, both user and agent so far
+for message in st.session_state.messages:
+    if hasattr(message, 'type') and hasattr(message, 'content'):
+        st.chat_message(message.type).markdown(message.content)
+
+
+# Now get a prompt from a user
+question = st.chat_input(lang_dict.get('assistant_question', "Ask something..."))
+
+with st.sidebar:
+    st.divider()
+    picture = st.camera_input(lang_dict.get('take_picture', "Take a picture"))
+    if picture:
+        if 'OPENAI_API_KEY' in st.secrets and st.secrets['OPENAI_API_KEY']: # Check key exists
+            img_desc_response = describeImage(picture.getvalue(), language) # Pass language
+            if img_desc_response and img_desc_response.choices and img_desc_response.choices[0].message.content:
+                picture_desc_text = img_desc_response.choices[0].message.content # Renamed
+                if not question: # If no text question, use image description
+                    question = picture_desc_text
+                    st.info(f"Using image description as question: {question[:100]}...") # Show snippet
+            else:
+                st.error("Could not get description from image.")
+        else:
+            st.error("OpenAI API Key not configured. Camera feature disabled.")
+
+
+if question:
+    print(f"Got question: {question}")
+    st.session_state.messages.append(HumanMessage(content=question))
+    with st.chat_message('human'):
+        st.markdown(question)
+
+    model = load_model_cached() # Use cached model
+    retriever = None
+    relevant_documents = []
+    
+    if vectorstore and not disable_vector_store:
+        retriever = load_retriever_fn(vectorstore, top_k_vectorstore)
+    
+    if retriever and not disable_vector_store:
+        if strategy == 'Basic Retrieval':
+            relevant_documents = retriever.get_relevant_documents(query=question)
+        elif strategy == 'Maximal Marginal Relevance':
+            relevant_documents = vectorstore.max_marginal_relevance_search(query=question, k=top_k_vectorstore)
+        elif strategy == 'Fusion':
+            if model: # Model needed for query generation
+                queries_chain_instance = generate_queries_chain_fn(model, language) # Pass model, language
+                if queries_chain_instance:
+                    fusion_queries_list = queries_chain_instance.invoke({"original_query": question})
+                    print(f"""Fusion queries: {fusion_queries_list}""")
+                    
+                    fusion_queries_display = f"""*{lang_dict.get('using_fusion_queries', "Using fusion queries:")}*\n"""
+                    for i, fq_item_text in enumerate(fusion_queries_list): # Iterate over text items
+                        fusion_queries_display += f"""\n{i+1}. :orange[{fq_item_text}]"""
+                    
+                    with st.chat_message('assistant'): # Intermediate message for fusion queries
+                        st.markdown(fusion_queries_display)
+                    st.session_state.messages.append(AIMessage(content=fusion_queries_display))
+
+                    retrieved_docs_lists = retriever.map().invoke(fusion_queries_list) # list of lists of docs
+                    fused_docs_with_scores = reciprocal_rank_fusion(retrieved_docs_lists)
+                    relevant_documents = [doc_tuple[0] for doc_tuple in fused_docs_with_scores][:top_k_vectorstore]
+                    print(f"""Fusion results: {relevant_documents}""")
+                else: # Fallback if query generation chain failed
+                    st.warning("Fusion query generation failed. Using Basic Retrieval.")
+                    relevant_documents = retriever.get_relevant_documents(query=question)
+            else: # Fallback if model not available
+                st.warning("Model not available for Fusion. Using Basic Retrieval.")
+                relevant_documents = retriever.get_relevant_documents(query=question)
+
+    with st.chat_message('assistant'):
+        final_response_str = '' # Renamed
+        response_placeholder = st.empty()
+        history_for_llm = {"chat_history": []} # Renamed
+        if memory:
+            history_for_llm = memory.load_memory_variables({})
+        print(f"Using memory: {history_for_llm}")
+
+        if model:
+            inputs_map = RunnableMap({
+                'context': lambda x: x['context'],
+                'chat_history': lambda x: x['chat_history'],
+                'question': lambda x: x['question']
+            })
+            chain = inputs_map | get_prompt(prompt_type, custom_prompt, language) | model # Pass custom_prompt and language
+
+            try:
+                llm_response_obj = chain.invoke( # Renamed
+                    {'question': question, 'chat_history': history_for_llm.get('chat_history',[]), 'context': relevant_documents}, 
+                    config={'callbacks': [StreamHandler(response_placeholder)]}
+                )
+                final_response_str = llm_response_obj.content if hasattr(llm_response_obj, 'content') else str(llm_response_obj)
+            except Exception as e:
+                print(f"Error invoking LLM chain: {e}")
+                st.error(f"Error during LLM chain invocation: {e}")
+                final_response_str = lang_dict.get("error_llm_invocation", "Sorry, error during response generation.")
+        else:
+            final_response_str = lang_dict.get("model_unavailable_error", "AI Model not available.")
+            st.warning(final_response_str)
+
+
+        if memory:
+            memory.save_context({'question': question}, {'answer': final_response_str})
+
+        full_display_message = final_response_str # Renamed
+        if not disable_vector_store and relevant_documents:
+            full_display_message += f"""\n\n*{lang_dict.get('sources_used', "Sources used:")}*"""
+            displayed_sources = [] # Renamed
+            for doc in relevant_documents:
+                source_name_meta = doc.metadata.get('source', 'Unknown Source') if hasattr(doc, 'metadata') and doc.metadata else 'Unknown Source'
+                source_basename_display = os.path.basename(os.path.normpath(source_name_meta)) # Renamed
+                if source_basename_display not in displayed_sources:
+                    full_display_message += f"""\n📙 :orange[{source_basename_display}]"""
+                    displayed_sources.append(source_basename_display)
+        elif not disable_vector_store: # but relevant_documents is empty
+             full_display_message += f"""\n\n*{lang_dict.get('no_relevant_docs_found', "No specific documents found for this query.")}*"""
+
+
+        if not disable_chat_history and memory and history_for_llm.get('chat_history',[]):
+            num_hist_pairs = len(history_for_llm['chat_history']) // 2
+            full_display_message += f"""\n\n*{lang_dict.get('chat_history_info', "Chat history considered")}: ({num_hist_pairs} / {top_k_history})*"""
+        
+        response_placeholder.markdown(full_display_message)
+        st.session_state.messages.append(AIMessage(content=full_display_message))
+
+with st.sidebar:
+    st.divider()
+    st.caption(lang_dict.get("app_version", "v0.1.0_mod"))
