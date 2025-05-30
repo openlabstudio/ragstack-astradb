@@ -1,11 +1,10 @@
-import os, base64, uuid, hmac
-import pandas as pd
-from pathlib import Path
-
 import streamlit as st
-
-from langchain_community.vectorstores import AstraDB
+import uuid
+import hmac
+import os
+import pandas as pd
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_community.vectorstores import AstraDB
 from langchain.memory import ConversationBufferWindowMemory, AstraDBChatMessageHistory
 from langchain.schema import HumanMessage, AIMessage
 from langchain.prompts import ChatPromptTemplate
@@ -52,37 +51,17 @@ def check_password():
         st.error('😕 User not known or password incorrect')
     return False
 
-def logout():
-    for key in st.session_state.keys():
-        del st.session_state[key]
-    st.cache_resource.clear()
-    st.cache_data.clear()
-    st.rerun()
-
-@st.cache_data()
-def load_localization(locale):
-    df = pd.read_csv("./customizations/localization.csv")
-    df = df.query(f"locale == '{locale}'")
-    return {df.key.to_list()[i]: df.value.to_list()[i] for i in range(len(df.key.to_list()))}
-
-@st.cache_data()
-def load_rails(username):
-    df = pd.read_csv("./customizations/rails.csv")
-    df = df.query(f"username == '{username}'")
-    return {df.key.to_list()[i]: df.value.to_list()[i] for i in range(len(df.key.to_list()))}
-
 if not check_password():
     st.stop()
 
 username = st.session_state.user
 language = st.secrets.languages[username]
-lang_dict = load_localization(language)
 
-@st.cache_resource(show_spinner=lang_dict['load_embedding'])
+@st.cache_resource()
 def load_embedding():
     return OpenAIEmbeddings()
 
-@st.cache_resource(show_spinner=lang_dict['load_vectorstore'])
+@st.cache_resource()
 def load_vectorstore(username):
     return AstraDB(
         embedding=embedding,
@@ -91,7 +70,7 @@ def load_vectorstore(username):
         api_endpoint=os.environ["ASTRA_ENDPOINT"],
     )
 
-@st.cache_resource(show_spinner=lang_dict['load_message_history'])
+@st.cache_resource()
 def load_chat_history(username):
     return AstraDBChatMessageHistory(
         session_id=f"{username}_{st.session_state.session_id}",
@@ -110,25 +89,8 @@ def load_memory(top_k_history):
         output_key='answer',
     )
 
-def get_prompt(type):
-    template = ''
-    if type == 'Extended results':
-        template = f"""You're a helpful AI assistant tasked to answer the user's questions.
-You're friendly and you answer extensively with multiple sentences. You prefer to use bulletpoints to summarize.
-If you don't know the answer, just say 'I do not know the answer'.
-
-Use the following context to answer the question:
-{{context}}
-
-Use the following chat history to answer the question:
-{{chat_history}}
-
-Question:
-{{question}}
-
-Answer in {language}:"""
-    elif type == 'Short results':
-        template = f"""You're a helpful AI assistant tasked to answer the user's questions.
+def get_prompt():
+    template = f"""You're a helpful AI assistant tasked to answer the user's questions.
 You answer in an exceptionally brief way.
 If you don't know the answer, just say 'I do not know the answer'.
 
@@ -142,8 +104,6 @@ Question:
 {{question}}
 
 Answer in {language}:"""
-    elif type == 'Custom':
-        template = custom_prompt
     return ChatPromptTemplate.from_messages([("system", template)])
 
 def load_model():
@@ -157,57 +117,23 @@ def load_model():
 def load_retriever(top_k_vectorstore):
     return vectorstore.as_retriever(search_kwargs={"k": top_k_vectorstore})
 
+# Inicialización
+embedding = load_embedding()
+vectorstore = load_vectorstore(username)
+chat_history = load_chat_history(username)
+memory = load_memory(5)  # Puedes ajustar el valor de k según tus necesidades
+
 if 'messages' not in st.session_state:
     st.session_state.messages = []
 
-# Título personalizado
+# Título
 st.title("OPENLAB VC expert")
 
-with st.sidebar:
-    try:
-        st.image(f"""./customizations/logo/{username}.svg""", use_column_width="always")
-    except:
-        try:
-            st.image(f"""./customizations/logo/{username}.png""", use_column_width="always")
-        except:
-            st.image('./customizations/logo/default.svg', use_column_width="always")
-
-    st.markdown(f"""{lang_dict['logout_caption']} :orange[{username}]""")
-    if st.button(lang_dict['logout_button']):
-        logout()
-
-    st.divider()
-
-    rails_dict = load_rails(username)
-    embedding = load_embedding()
-    vectorstore = load_vectorstore(username)
-    chat_history = load_chat_history(username)
-
-    disable_chat_history = st.toggle(lang_dict['disable_chat_history'])
-    top_k_history = st.slider(lang_dict['k_chat_history'], 1, 50, 5, disabled=disable_chat_history)
-    memory = load_memory(top_k_history if not disable_chat_history else 0)
-
-    if st.button(lang_dict['delete_chat_history_button'], disabled=disable_chat_history):
-        with st.spinner(lang_dict['deleting_chat_history']):
-            memory.clear()
-
-    disable_vector_store = st.toggle(lang_dict['disable_vector_store'])
-    top_k_vectorstore = st.slider(lang_dict['top_k_vector_store'], 1, 50, 5, disabled=disable_vector_store)
-    strategy = st.selectbox(lang_dict['rag_strategy'], ('Basic Retrieval', 'Maximal Marginal Relevance'), help=lang_dict['rag_strategy_help'], disabled=disable_vector_store)
-
-    try:
-        custom_prompt_text = open(f"""./customizations/prompt/{username}.txt""").read()
-        custom_prompt_index = 2
-    except:
-        custom_prompt_text = open(f"""./customizations/prompt/default.txt""").read()
-        custom_prompt_index = 0
-
-    prompt_type = st.selectbox(lang_dict['system_prompt'], ('Short results', 'Extended results', 'Custom'), index=custom_prompt_index)
-    custom_prompt = st.text_area(lang_dict['custom_prompt'], custom_prompt_text, help=lang_dict['custom_prompt_help'], disabled=(prompt_type != 'Custom'))
-
+# Mostrar mensajes anteriores
 for message in st.session_state.messages:
     st.chat_message(message.type).markdown(message.content)
 
+# Entrada de usuario
 question = st.chat_input("")
 
 if question:
@@ -215,9 +141,9 @@ if question:
     st.chat_message('human').markdown(question)
 
     model = load_model()
-    retriever = load_retriever(top_k_vectorstore)
+    retriever = load_retriever(5)  # Puedes ajustar el valor de k según tus necesidades
 
-    relevant_documents = retriever.get_relevant_documents(query=question, k=top_k_vectorstore) if not disable_vector_store else []
+    relevant_documents = retriever.get_relevant_documents(query=question, k=5)
 
     with st.chat_message('assistant'):
         content = ''
@@ -227,7 +153,7 @@ if question:
             'context': lambda x: x['context'],
             'chat_history': lambda x: x['chat_history'],
             'question': lambda x: x['question']
-        }) | get_prompt(prompt_type) | model
+        }) | get_prompt() | model
 
         response = chain.invoke({'question': question, 'chat_history': history, 'context': relevant_documents}, config={'callbacks': [StreamHandler(response_placeholder)]})
         content += response.content
