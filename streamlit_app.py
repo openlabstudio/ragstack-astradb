@@ -26,12 +26,36 @@ class StreamHandler(BaseCallbackHandler):
         self.text += token
         self.container.markdown(self.text + "▌")
 
+def check_password():
+    def login_form():
+        with st.form("credentials"):
+            st.text_input('Username', key='username')
+            st.text_input('Password', type='password', key='password')
+            st.form_submit_button('Login', on_click=password_entered)
 
+    def password_entered():
+        if st.session_state['username'] in st.secrets['passwords'] and hmac.compare_digest(
+            st.session_state['password'], st.secrets.passwords[st.session_state['username']]
+        ):
+            st.session_state['password_correct'] = True
+            st.session_state.user = st.session_state['username']
+            del st.session_state['password']
+        else:
+            st.session_state['password_correct'] = False
 
-# Login desactivado para versión pública
-st.session_state.user = "public_user"
-username = "public_user"
-language = "es_ES"  # o "es_ES", según tu preferencia
+    if st.session_state.get('password_correct', False):
+        return True
+
+    login_form()
+    if "password_correct" in st.session_state:
+        st.error('😕 User not known or password incorrect')
+    return False
+
+if not check_password():
+    st.stop()
+
+username = st.session_state.user
+language = "es"
 
 @st.cache_resource()
 def load_embedding():
